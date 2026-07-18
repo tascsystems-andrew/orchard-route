@@ -16,28 +16,36 @@ around what Metal and unified memory are actually good at.
 
 ## Status — working prototype
 
-First full-board route (2026-07-18, MacBook Pro M4 Pro): a real 300×279 mm,
-487-net amplifier board — **399 of 410 routable nets negotiated to a fully legal
-routing** (zero copper overlaps) in 19 PathFinder iterations, ~29.5 m of track,
-under 5 minutes end-to-end including parsing and write-back.
+Flagship result (2026-07-18, MacBook Pro M4 Pro): a real 300×279 mm, 487-net
+amplifier board — **all 410 routable nets negotiated to a fully legal routing**
+(zero copper overlaps), 29.5 m of track, 1,259 vias (down from 2,824 at the
+first legal route the same morning), 45°-smoothed output, ~7 minutes end-to-end
+including parsing and write-back.
 
 What works today:
 
-- **`board.py`** — pure-Python `.kicad_pcb` parser (KiCad 9/10, no `pcbnew` needed)
-- **`lattice.py`** — vectorized board → Manhattan CSR lattice (247k nodes in ~10 ms)
+- **`board.py`** — pure-Python `.kicad_pcb` parser (KiCad 5/9/10, no `pcbnew` needed)
+- **`lattice.py`** — vectorized board → CSR lattice (both-directions layer model
+  with direction preference; true rotated pad ownership; intentional pad-overlap
+  allowances)
 - **`wavefront.py`** — batched min-plus wavefront SSSP as an `mx.fast.metal_kernel`;
   the pull formulation needs **no atomics**, and 128 nets route per kernel launch
   (~0.5 ms per net; routing 32 nets costs the same wall-clock as routing 1)
-- **`pathfinder.py`** — parallel PathFinder negotiation: batched routing against a
-  shared congestion snapshot, asymmetric rip-up, windowed stall escape, guaranteed-legal
-  output
-- **`backtrace.py` / `render.py` / `writeback.py`** — distance fields → paths → SVG
-  render → a routed *copy* of the board that `kicad-cli` loads clean
+- **`pathfinder.py`** — parallel PathFinder negotiation with asymmetric rip-up,
+  keeper alternation, windowed stall escape, a post-legal refine pass, and
+  legality-checked 45° smoothing; output is always legal, never optimistic
+- **`constraints.py` / `place.py`** — the closed analog-constraint vocabulary and
+  a deterministic annealing placement explorer (the router-independent half of
+  `optimize_region`)
+- **`backtrace.py` / `render.py` / `writeback.py`** — distance fields → paths →
+  SVG render → routed *copies* of the board (tracks, vias, and component moves)
+  that `kicad-cli` loads clean
 
-Honest limitations, today: routes are legal but not yet pretty (via-heavy — the
-alternating-layer model is being replaced for 2-layer boards), clearance classes are
-not yet enforced (grid pitch is the de-facto clearance), and placement optimization
-is designed but not built.
+Honest limitations, today: clearance classes are not yet enforced (grid pitch is
+the de-facto clearance — active work), routing is 2-layer only (inner layers
+unmodeled), a handful of nets on dense boards hit a known multi-party negotiation
+standoff (active work), and the region place-and-route loop is designed
+([REGION_SOLVER.md](REGION_SOLVER.md)) but not yet wired together.
 
 ## Benchmarks — measured against human ground truth
 
