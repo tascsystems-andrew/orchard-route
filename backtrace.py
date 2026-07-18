@@ -16,12 +16,17 @@ handling — the walk stops at whichever zero it descends into.
 import numpy as np
 
 
-def extract_path(dist, row_ptr, col_idx, weight, target, tol=1e-4):
+def extract_path(dist, row_ptr, col_idx, weight, target, tol=1e-4, cost=None):
     """Walk downhill from `target` to a zero of `dist`; return node ids source-first.
 
     dist is one (N,) plane from gpu_sssp / gpu_sssp_batch (numpy). Raises
     ValueError if target is unreachable or dist is not a consistent SSSP
     fixed point (walk stalls or exceeds N steps).
+
+    cost: optional (N,) per-node entry costs the plane was relaxed WITH
+    (wavefront.batched_sssp's `cost` argument). The predecessor condition
+    becomes dist[u] + w(u,v) + cost[v] <= dist[v] + tol; default None keeps
+    the plain-SSSP behavior bit-for-bit.
     """
     N = dist.shape[0]
     dt = float(dist[target])
@@ -35,12 +40,13 @@ def extract_path(dist, row_ptr, col_idx, weight, target, tol=1e-4):
         if dv == 0.0:
             path.reverse()
             return path
+        cv = 0.0 if cost is None else float(cost[v])
         best_u = -1
         best_du = np.inf
         for k in range(int(row_ptr[v]), int(row_ptr[v + 1])):
             u = int(col_idx[k])
             du = float(dist[u])
-            if du < dv and du + float(weight[k]) <= dv + tol and du < best_du:
+            if du < dv and du + float(weight[k]) + cv <= dv + tol and du < best_du:
                 best_du = du
                 best_u = u
         if best_u < 0:
