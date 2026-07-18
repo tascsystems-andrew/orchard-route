@@ -116,10 +116,16 @@ def build_connections(net_pads):
     return conns, conflicts, claim
 
 
-def route_lattice(lat, net_pads, node_owner=None, hist_weight=0.5,
-                  present_factor=1.0, present_growth=1.4, max_iters=40,
-                  batch_size=128, max_rounds=100_000):
-    """Negotiation loop over a built Lattice. net_pads as in build_connections."""
+def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
+                  hist_weight=0.5, present_factor=1.0, present_growth=1.4,
+                  max_iters=40, batch_size=128, max_rounds=100_000):
+    """Negotiation loop over a built Lattice. net_pads as in build_connections.
+
+    extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
+    per-net holes in the ownership masks where the INPUT board already
+    overlaps different-net pad copper — crossing there creates no short the
+    fab won't. Without it, a pad nested inside a bigger pad's copper is
+    walled in and its net can never route."""
     import mlx.core as mx
     import wavefront
 
@@ -148,6 +154,9 @@ def route_lattice(lat, net_pads, node_owner=None, hist_weight=0.5,
             m = np.zeros(N, dtype=np.uint8)
             if own_nodes.size:
                 m[own_nodes[own_nets != net]] = 1
+            grant = (extra_allow or {}).get(net)
+            if grant:
+                m[np.fromiter(grant, dtype=np.int64, count=len(grant))] = 0
             masks[net] = m
         return m
 
@@ -361,7 +370,7 @@ def net_pads_for_board(board, lat, node_owner=None):
     """Board pads -> net_pads for build_connections. A through-hole pad snaps
     on EVERY lattice layer (one set); an SMD pad on its own layer(s) present.
 
-    A pad's node set is its snap node PLUS every bbox node the ownership
+    A pad's node set is its snap node PLUS every footprint node the ownership
     arbitration assigned to its net: the whole footprint is the escape set, so
     a route can leave by any side of the pad, not only past the snap node —
     fine-pitch pads whose snap node is hemmed in by a neighbor's claim would
@@ -391,7 +400,7 @@ def net_pads_for_board(board, lat, node_owner=None):
 def route_board(board_path, pitch_mm=1.0, layer_names=None, **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult)."""
     from board import load_board
-    from lattice import lattice_for_board
+    from lattice import lattice_for_board, pad_overlap_allowances
 
     t0 = time.perf_counter()
     brd = load_board(board_path)
@@ -399,9 +408,10 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, **kwargs):
     t0 = time.perf_counter()
     lat, _pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
                                                     layer_names=layer_names)
+    extra_allow = pad_overlap_allowances(brd, lat)
     t_lat = time.perf_counter() - t0
     res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
-                        node_owner, **kwargs)
+                        node_owner, extra_allow=extra_allow, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     return brd, lat, res
 

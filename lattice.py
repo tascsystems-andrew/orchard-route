@@ -14,6 +14,8 @@ Two deliberate choices:
 - The CSR is assembled fully vectorized (edge chunks -> bincount -> argsort);
   a 240k-node board lattice must build in well under a second.
 """
+import math
+
 import numpy as np
 
 
@@ -111,19 +113,113 @@ def build_lattice(W, H, L, pitch_mm=1.0, origin_mm=(0.0, 0.0), layer_names=None,
 
 
 def pad_rect_nodes(lat, pad, layer_name):
-    """Node ids under a pad's axis-aligned bbox on one layer."""
+    """Node ids under a pad's TRUE rectangle (width x height at rotation_deg)
+    on one layer. Iterates the rotated rect's axis-aligned bbox, then keeps
+    only nodes inside the rect proper — claiming the whole bbox over-claims
+    for rotated pads and can swallow a small neighbor pad entirely."""
     il = lat.layer_names.index(layer_name)
     ox, oy = lat.origin_mm
     p = lat.pitch_mm
     eps = 1e-9
-    ix_lo = max(0, int(np.ceil((pad.x_mm - pad.width_mm / 2 - ox) / p - eps)))
-    ix_hi = min(lat.W - 1, int(np.floor((pad.x_mm + pad.width_mm / 2 - ox) / p + eps)))
-    iy_lo = max(0, int(np.ceil((pad.y_mm - pad.height_mm / 2 - oy) / p - eps)))
-    iy_hi = min(lat.H - 1, int(np.floor((pad.y_mm + pad.height_mm / 2 - oy) / p + eps)))
+    t = math.radians(getattr(pad, "rotation_deg", 0.0))
+    c, s = math.cos(t), math.sin(t)
+    hw, hh = pad.width_mm / 2, pad.height_mm / 2
+    bx = abs(hw * c) + abs(hh * s)   # rotated rect's half-extents in board frame
+    by = abs(hw * s) + abs(hh * c)
+    ix_lo = max(0, int(np.ceil((pad.x_mm - bx - ox) / p - eps)))
+    ix_hi = min(lat.W - 1, int(np.floor((pad.x_mm + bx - ox) / p + eps)))
+    iy_lo = max(0, int(np.ceil((pad.y_mm - by - oy) / p - eps)))
+    iy_hi = min(lat.H - 1, int(np.floor((pad.y_mm + by - oy) / p + eps)))
     base = il * lat.W * lat.H
-    return [base + iy * lat.W + ix
-            for iy in range(iy_lo, iy_hi + 1)
-            for ix in range(ix_lo, ix_hi + 1)]
+    tol = 1e-6  # mm: nodes exactly on the pad edge stay inside
+    out = []
+    for iy in range(iy_lo, iy_hi + 1):
+        dy = oy + iy * p - pad.y_mm
+        for ix in range(ix_lo, ix_hi + 1):
+            dx = ox + ix * p - pad.x_mm
+            # board -> pad frame: inverse of board.py's _rotate (CCW, Y-down)
+            lx = dx * c - dy * s
+            ly = dx * s + dy * c
+            if abs(lx) <= hw + tol and abs(ly) <= hh + tol:
+                out.append(base + iy * lat.W + ix)
+    return out
+
+
+def _pads_overlap(p, q):
+    """True copper rects of two pads intersect (separating-axis test over both
+    rects' edge normals, rotation respected)."""
+    def corners(r):
+        t = math.radians(r.rotation_deg)
+        c, s = math.cos(t), math.sin(t)
+        hw, hh = r.width_mm / 2, r.height_mm / 2
+        return [(r.x_mm + lx * c + ly * s, r.y_mm - lx * s + ly * c)
+                for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
+
+    pc, qc = corners(p), corners(q)
+    for rect in (p, q):
+        t = math.radians(rect.rotation_deg)
+        for ax, ay in ((math.cos(t), -math.sin(t)), (math.sin(t), math.cos(t))):
+            pp = [x * ax + y * ay for x, y in pc]
+            qq = [x * ax + y * ay for x, y in qc]
+            if max(pp) <= min(qq) + 1e-9 or max(qq) <= min(pp) + 1e-9:
+                return False
+    return True
+
+
+def pad_overlap_allowances(board, lat):
+    """net_code -> node ids that net may cross despite another net's ownership.
+
+    Real boards (Voxy above all) OVERLAP different-net pads on purpose: 0603s
+    nested inside DIP LongPads, SMD pads centered on through-hole pads, header
+    pads longer than their pin spacing. Where two pads' true copper rects
+    intersect on a shared layer, the input board already joins those nets
+    electrically at that spot — routing either net across either pad there
+    creates no connection the fab won't. Refusing passage is what breaks:
+    the smaller pad sits entirely inside the bigger one's copper, every
+    surrounding node is owned by the bigger net, and the small pad's net
+    becomes unroutable at any pitch. So each net of an overlapping pair is
+    allowed through BOTH pads' nodes; all other nets still see hard walls.
+    """
+    # 4mm spatial hash: max pad half-diagonal seen in the wild is ~1.8mm, so
+    # overlapping centers are never more than one cell apart.
+    cell = 4.0
+    grid = {}
+    for pad in board.pads:
+        if not any(ln in lat.layer_names for ln in pad.layers):
+            continue
+        key = (int(pad.x_mm // cell), int(pad.y_mm // cell))
+        grid.setdefault(key, []).append(pad)
+
+    def nodes_of(pad):
+        out = set()
+        for ln in pad.layers:
+            if ln in lat.layer_names:
+                out.update(pad_rect_nodes(lat, pad, ln))
+        return out
+
+    allow = {}
+    for (cx, cy), pads in grid.items():
+        neighborhood = []
+        for kx in (cx, cx + 1):
+            for ky in (cy - 1, cy, cy + 1):
+                if (kx, ky) >= (cx, cy):  # half-neighborhood: each pair once
+                    neighborhood.append(grid.get((kx, ky), []))
+        for i, p in enumerate(pads):
+            for cellpads in neighborhood:
+                for q in (cellpads[i + 1:] if cellpads is pads else cellpads):
+                    if p.net_code == q.net_code:
+                        continue
+                    if abs(p.x_mm - q.x_mm) > cell or abs(p.y_mm - q.y_mm) > cell:
+                        continue
+                    if not set(p.layers) & set(q.layers):
+                        continue
+                    if not _pads_overlap(p, q):
+                        continue
+                    shared = nodes_of(p) | nodes_of(q)
+                    for net in (p.net_code, q.net_code):
+                        if net > 0:
+                            allow.setdefault(net, set()).update(shared)
+    return allow
 
 
 def lattice_for_board(board, pitch_mm, layer_names=None):
@@ -132,10 +228,10 @@ def lattice_for_board(board, pitch_mm, layer_names=None):
     pad_nodes: net_code -> node ids, each pad snapped to its nearest node on each
     of its copper layers present in the lattice.
     node_owner: node id -> net_code for every node whose (x,y) lies inside a
-    pad's bbox on that node's layer. Where two pads' bboxes overlap a node, the
-    pad whose CENTER is nearest wins — rotated pads' axis-aligned bboxes overlap
-    small neighbors routinely at fine pitch, and last-write-wins entombs the
-    loser (a pad with zero owned nodes cannot escape its own footprint).
+    pad's true rotated rectangle on that node's layer. Where two pads' rects
+    overlap a node, the pad whose CENTER is nearest wins — last-write-wins
+    entombs the loser (a pad with zero owned nodes cannot escape its own
+    footprint).
     Ownership is DATA for per-net masking — those nodes keep all their CSR edges.
     """
     if layer_names is None:

@@ -17,8 +17,9 @@ Two file-format facts shaped this module:
       (x cos + y sin,  -x sin + y cos)
   — the transpose of the textbook Y-up matrix. A pad's own in-file angle
   already has the footprint angle folded in (long-standing format quirk), so
-  it is used only to size the pad's axis-aligned bounding box, never applied
-  to position a second time.
+  it is never applied to position a second time; it is stored verbatim as
+  Pad.rotation_deg alongside the TRUE (pre-rotation) pad size, so consumers
+  can do exact point-in-rotated-rect tests instead of inflating a bbox.
 
 Unknown node types (zones, graphics, groups, properties, ...) are skipped
 without complaint; only the geometry the router needs is extracted.
@@ -33,9 +34,10 @@ class Pad:
     x_mm: float; y_mm: float          # ABSOLUTE board coords (footprint at/rotation composed with pad offset+rotation)
     layers: list                       # e.g. ['F.Cu'], or every copper layer for through-hole
     net_code: int; net_name: str
-    width_mm: float; height_mm: float  # axis-aligned bounding size after rotation is fine for v0
+    width_mm: float; height_mm: float  # TRUE pad size, before rotation
     through_hole: bool
     drill_mm: float                    # 0.0 for SMD
+    rotation_deg: float = 0.0          # total rotation (footprint + pad, KiCad CCW, Y-down)
 
 
 @dataclass
@@ -317,9 +319,6 @@ def load_board(path: str) -> Board:
             sz = _floats(_kid(pad, "size") or ["size"])
             w = sz[0] if len(sz) > 0 else 0.0
             h = sz[1] if len(sz) > 1 else w
-            t = math.radians(prot)
-            bw = abs(w * math.cos(t)) + abs(h * math.sin(t))
-            bh = abs(w * math.sin(t)) + abs(h * math.cos(t))
 
             drill = 0.0
             dn = _kid(pad, "drill")
@@ -334,7 +333,7 @@ def load_board(path: str) -> Board:
 
             code, name = resolve(_kid(pad, "net"))
             pads.append(Pad(fx + dx, fy + dy, pad_layers, code, name,
-                            bw, bh, through, drill))
+                            w, h, through, drill, prot))
 
     tracks = []
     for seg in _kids(root, "segment"):

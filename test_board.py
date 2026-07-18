@@ -105,7 +105,8 @@ def check_primary(board):
         check(not p1.through_hole and p1.drill_mm == 0.0, "C65 pad 1 is SMD")
         check(p1.layers == ["F.Cu"], f"C65 pad 1 layers {p1.layers}")
         check(abs(p1.width_mm - 1.0) < 1e-9 and abs(p1.height_mm - 1.45) < 1e-9,
-              "C65 pad 1 size 1.0 x 1.45 (rotation 0, no swap)")
+              "C65 pad 1 true size 1.0 x 1.45")
+        check(p1.rotation_deg == 0.0, "C65 pad 1 rotation 0")
     p2 = find_pad(board, 244.54, 22.87)
     check(p2 is not None and p2.net_name == "Net-(U4A--)",
           "C65 pad 2 found at (244.54, 22.87) with net Net-(U4A--)")
@@ -121,6 +122,10 @@ def check_second(board):
         check(p1.through_hole and abs(p1.drill_mm - 2.03) < 1e-9,
               f"5755 pad 1 through-hole, drill {p1.drill_mm} (max of oval 1.02x2.03)")
         check(p1.layers == board.copper_layers, "5755 pad 1 on all copper layers")
+        check(abs(p1.width_mm - 2.03) < 1e-9 and abs(p1.height_mm - 3.05) < 1e-9,
+              "5755 pad 1 TRUE size 2.03 x 3.05 (file size, not the rotated bbox)")
+        check(abs(p1.rotation_deg - 216) < 1e-9,
+              f"5755 pad 1 rotation {p1.rotation_deg} == 216 (in-file angle, frot folded in)")
     p4 = find_pad(board, 90.234128, 146.434528)
     check(p4 is not None,
           "5755 pad 4 (footprint rotated -90) at hand-computed (90.234128, 146.434528)")

@@ -61,8 +61,13 @@ def render_svg(brd, lat, result, out_path, title=""):
 
     out.append('<g fill="#9aa0a6" fill-opacity="0.8">')
     for p in brd.pads:
+        # KiCad angles are CCW with Y down; SVG rotate() is CW in the same
+        # Y-down frame, so the sign flips.
+        rot = getattr(p, "rotation_deg", 0.0) % 360.0
+        xform = (f' transform="rotate({_f(-rot)} {_f(p.x_mm)} {_f(p.y_mm)})"'
+                 if rot else "")
         out.append(f'<rect x="{_f(p.x_mm - p.width_mm / 2)}" y="{_f(p.y_mm - p.height_mm / 2)}" '
-                   f'width="{_f(p.width_mm)}" height="{_f(p.height_mm)}"/>')
+                   f'width="{_f(p.width_mm)}" height="{_f(p.height_mm)}"{xform}/>')
     out.append('</g>')
     out.append('<g fill="none" stroke="#5f6368" stroke-width="0.25">')
     for p in brd.pads:
