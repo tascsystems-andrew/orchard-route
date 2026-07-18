@@ -21,6 +21,13 @@ def csr_entries(W, H, L):
     return 2 * undirected
 
 
+def csr_entries_both(W, H, L):
+    """Closed-form CSR entry count for directions="both": every layer carries
+    both horizontal and vertical edges."""
+    undirected = L * ((W - 1) * H + W * (H - 1)) + W * H * (L - 1)
+    return 2 * undirected
+
+
 def test_structure():
     W, H, L = 5, 4, 3
     lat = build_lattice(W, H, L, pitch_mm=0.5, origin_mm=(10.0, 20.0))
@@ -52,6 +59,72 @@ def test_structure():
     assert lat.snap(-1e3, -1e3, lat.layer_names[0]) == lat.node(0, 0, 0)
     assert lat.snap(1e3, 1e3, lat.layer_names[2]) == lat.node(W - 1, H - 1, 2)
     print("structure: PASS")
+
+
+def test_structure_both():
+    W, H, L = 5, 4, 3
+    base, pen, via = 1.0, 1.5, 3.0
+    lat = build_lattice(W, H, L, base_cost=base, via_cost=via,
+                        directions="both", dir_penalty=pen)
+    N = W * H * L
+    E = csr_entries_both(W, H, L)
+    assert int(lat.row_ptr[-1]) == E == lat.col_idx.size == lat.weight.size
+
+    # Symmetry: the edge multiset equals its own reversal, weights included.
+    h = np.repeat(np.arange(N, dtype=np.int64), np.diff(lat.row_ptr).astype(np.int64))
+    t = lat.col_idx.astype(np.int64)
+    fwd = np.lexsort((t, h))
+    rev = np.lexsort((h, t))
+    assert np.array_equal(h[fwd], t[rev]) and np.array_equal(t[fwd], h[rev])
+    assert np.array_equal(lat.weight[fwd], lat.weight[rev])
+
+    # Every CSR entry classified and priced: preferred direction (horizontal
+    # on even layers, vertical on odd) at base_cost, the other at base * pen,
+    # vias at via_cost — checked exhaustively on every layer.
+    hl, hrem = np.divmod(h, W * H)
+    hy, hx = np.divmod(hrem, W)
+    tl, trem = np.divmod(t, W * H)
+    ty, tx = np.divmod(trem, W)
+    horiz = (hl == tl) & (hy == ty) & (np.abs(hx - tx) == 1)
+    vert = (hl == tl) & (hx == tx) & (np.abs(hy - ty) == 1)
+    via_e = (np.abs(hl - tl) == 1) & (hx == tx) & (hy == ty)
+    assert np.all(horiz | vert | via_e)  # nothing else exists
+    even = hl % 2 == 0
+    expected = np.where(via_e, via,
+                        np.where(horiz == even, base, base * pen)).astype(np.float32)
+    assert np.array_equal(lat.weight, expected)
+    # ... and both classes are actually present on every layer.
+    for l in range(L):
+        assert np.any(horiz & (hl == l)) and np.any(vert & (hl == l))
+    print("structure both: PASS")
+
+
+def test_gpu_smoke_both():
+    """L-shaped two-point route on a directions="both" 2-layer lattice must
+    stay on one layer: 23 preferred steps + 17 penalized (23 + 17*1.25 =
+    44.25) beats the via round trip (23 + 17 + 2*3 = 46) even at the compat
+    via_cost of 3. Backtrace the path and demand ZERO layer changes."""
+    import batch_sssp
+    from backtrace import extract_path
+    W, H, L = 30, 30, 2
+    lat = build_lattice(W, H, L, layer_names=["F.Cu", "B.Cu"],
+                        directions="both", dir_penalty=1.25)
+    src = lat.snap(2.0, 3.0, "F.Cu")
+    dst = lat.snap(25.0, 20.0, "F.Cu")
+    rp, ci, wt = lat.to_mx()
+    dist, rounds = batch_sssp.gpu_sssp_batch(rp, ci, wt, W * H * L, [src])
+    dcol = np.ascontiguousarray(np.asarray(dist, dtype=np.float64)[0])
+    d = float(dcol[dst])
+    expected = 23 * 1.0 + 17 * 1.25
+    assert np.isfinite(d)
+    assert abs(d - expected) < 1e-4, (d, expected)
+    path = extract_path(dcol, lat.row_ptr, lat.col_idx, lat.weight, dst)
+    assert path[0] == src and path[-1] == dst
+    layers = [lat.coords(n)[2] for n in path]
+    vias = sum(1 for a, b in zip(layers, layers[1:]) if a != b)
+    assert vias == 0, f"same-layer L-route took {vias} via(s)"
+    print(f"gpu smoke both: PASS  (dist={d}, expected={expected}, "
+          f"path={len(path)} nodes, vias={vias}, rounds={rounds})")
 
 
 def test_blocked():
@@ -116,7 +189,9 @@ def test_board():
 
 if __name__ == "__main__":
     test_structure()
+    test_structure_both()
     test_blocked()
     test_build_speed()
     test_gpu_smoke()
+    test_gpu_smoke_both()
     test_board()

@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 out/
 .DS_Store
+
+# third-party benchmark boards (see bench/boards/SOURCES.md)
+bench/boards/

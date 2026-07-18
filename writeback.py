@@ -340,7 +340,13 @@ def main(argv=None):
     from pathfinder import route_board, paths_to_tracks
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                 layer_names=layers)
-    tracks, vias = paths_to_tracks(lat, res.net_paths)
+    # Prefer the router's smoothed geometry (45-degree segments emit as plain
+    # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
+    # lattice geometry is the fallback when smoothing was disabled.
+    if res.tracks is not None:
+        tracks, vias = res.tracks, res.vias
+    else:
+        tracks, vias = paths_to_tracks(lat, res.net_paths)
 
     pro = project_file_for(args.board)
     widths = load_net_class_widths(pro, brd.nets) if pro else {}

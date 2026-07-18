@@ -76,7 +76,13 @@ def render_svg(brd, lat, result, out_path, title=""):
             out.append(f'<circle cx="{_f(p.x_mm)}" cy="{_f(p.y_mm)}" r="{_f(r)}"/>')
     out.append('</g>')
 
-    tracks, vias = paths_to_tracks(lat, result.net_paths)
+    # Prefer the router's smoothed geometry (RouteResult.tracks/.vias, 45s
+    # allowed); fall back to raw lattice geometry when absent.
+    tracks, vias = result.tracks, result.vias
+    if tracks is None or vias is None:
+        raw_tracks, raw_vias = paths_to_tracks(lat, result.net_paths)
+        tracks = raw_tracks if tracks is None else tracks
+        vias = raw_vias if vias is None else vias
     out.append('<g fill="none" stroke-width="0.35" stroke-linecap="round" stroke-opacity="0.85">')
     for x1, y1, x2, y2, layer, _net in tracks:
         out.append(f'<line x1="{_f(x1)}" y1="{_f(y1)}" x2="{_f(x2)}" y2="{_f(y2)}" '

@@ -1,10 +1,19 @@
 """L2: board -> routing graph. Manhattan CSR lattice over a board area.
 
-Conventions match spike_sssp.py EXACTLY: node id = l*W*H + y*W + x, horizontal
-edges on even layer indices, vertical on odd (the alternating single-direction
-model), via edges between adjacent layers, symmetric adjacency, CSR as
-(row_ptr uint32 [N+1], col_idx uint32 [E], weight float32 [E]) — ready for
-batch_sssp.gpu_sssp_batch via to_mx().
+Conventions match spike_sssp.py EXACTLY: node id = l*W*H + y*W + x, via edges
+between adjacent layers, symmetric adjacency, CSR as (row_ptr uint32 [N+1],
+col_idx uint32 [E], weight float32 [E]) — ready for batch_sssp.gpu_sssp_batch
+via to_mx().
+
+Two direction models (build_lattice `directions`):
+- "alternating" (default): horizontal edges on even layer indices, vertical on
+  odd — the single-direction-per-layer model spike_sssp.py established. Right
+  for many-layer backplanes; on a 2-layer board it forces a via at every turn.
+- "both": every layer gets BOTH horizontal and vertical edges. The layer's
+  PREFERRED direction (even index -> horizontal, odd -> vertical) costs
+  base_cost; the other costs base_cost * dir_penalty, so nets still sort
+  themselves by direction where it's contested but a corner is a corner, not
+  a layer change.
 
 Two deliberate choices:
 - The lattice is built UNBLOCKED except the explicit `blocked` set (hard holes:
@@ -62,7 +71,11 @@ class Lattice:
 
 
 def build_lattice(W, H, L, pitch_mm=1.0, origin_mm=(0.0, 0.0), layer_names=None,
-                  base_cost=1.0, via_cost=3.0, blocked=frozenset()):
+                  base_cost=1.0, via_cost=3.0, blocked=frozenset(),
+                  directions="alternating", dir_penalty=1.25):
+    if directions not in ("alternating", "both"):
+        raise ValueError(f"directions must be 'alternating' or 'both', "
+                         f"got {directions!r}")
     if layer_names is None:
         layer_names = [f"L{i}" for i in range(L)]
     if len(layer_names) != L:
@@ -78,9 +91,16 @@ def build_lattice(W, H, L, pitch_mm=1.0, origin_mm=(0.0, 0.0), layer_names=None,
         vs.append(b)
         ws.append(np.full(a.size, cost, dtype=np.float32))
 
+    penalized = base_cost * dir_penalty
     for l in range(L):
         ids = plane + l * W * H
-        if l % 2 == 0:
+        if directions == "both":
+            # Preferred direction at base_cost, the other at base * dir_penalty.
+            h_cost = base_cost if l % 2 == 0 else penalized
+            v_cost = penalized if l % 2 == 0 else base_cost
+            add(ids[:, :-1], ids[:, 1:], h_cost)
+            add(ids[:-1, :], ids[1:, :], v_cost)
+        elif l % 2 == 0:
             add(ids[:, :-1], ids[:, 1:], base_cost)   # horizontal on even layers
         else:
             add(ids[:-1, :], ids[1:, :], base_cost)   # vertical on odd layers
@@ -222,8 +242,16 @@ def pad_overlap_allowances(board, lat):
     return allow
 
 
-def lattice_for_board(board, pitch_mm, layer_names=None):
+def lattice_for_board(board, pitch_mm, layer_names=None, directions="both",
+                      via_cost=8.0, dir_penalty=1.25):
     """Board (board.py dataclass) -> (lattice over bbox+margin, pad_nodes, node_owner).
+
+    Board-routing defaults deliberately differ from build_lattice's compat
+    defaults: directions="both" (a same-layer corner must not cost a via —
+    the 2-layer case) and via_cost=8.0 (a via is ~8 grid steps of pain — 12 provably livelocks
+    negotiation on Voxy (single-node standoff, net pair 80/82); final calibration
+    belongs to the bench fleet, not one board:
+    drill cost, reliability, and it blocks BOTH layers).
 
     pad_nodes: net_code -> node ids, each pad snapped to its nearest node on each
     of its copper layers present in the lattice.
@@ -243,7 +271,8 @@ def lattice_for_board(board, pitch_mm, layer_names=None):
     H = int(np.ceil((board.size_mm[1] + 2.0 * margin) / pitch_mm)) + 1
     L = len(layer_names)
     lat = build_lattice(W, H, L, pitch_mm=pitch_mm, origin_mm=(ox, oy),
-                        layer_names=layer_names)
+                        layer_names=layer_names, directions=directions,
+                        via_cost=via_cost, dir_penalty=dir_penalty)
 
     layer_index = {name: i for i, name in enumerate(layer_names)}
     pad_nodes = {}

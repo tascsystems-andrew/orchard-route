@@ -29,10 +29,16 @@ Choices that matter:
   built so it can never trade legality for it.
 - paths_to_tracks dedupes same-net lattice edges/vias across paths before
   merging collinear runs: a shared trunk emits its copper once.
+- Emission smooths 90-degree staircases into 45-degree segments (smooth.py)
+  against an occupancy map of every routed node plus pad ownership — corners
+  are cut only where the diagonal clips no foreign copper. The smoothed
+  geometry lands on RouteResult.tracks/.vias; net_paths stays raw and
+  paths_to_tracks stays the exact-lattice fallback.
 
 CLI: python pathfinder.py BOARD.kicad_pcb [--pitch 1.0] [--layers F.Cu,B.Cu]
-     [--svg out.svg] [--no-refine]
+     [--svg out.svg] [--no-refine] [--no-smooth]
 """
+import math
 import time
 from dataclasses import dataclass
 
@@ -51,6 +57,9 @@ class RouteResult:
     wirelength_mm: float
     via_count: int
     seconds: dict       # stage name -> wall seconds
+    tracks: list = None # smoothed (x1, y1, x2, y2, layer, net) segments (45s
+                        # allowed); None -> consumers use paths_to_tracks
+    vias: list = None   # (x_mm, y_mm, net) matching tracks; None as above
 
 
 @dataclass
@@ -145,7 +154,7 @@ def _own_tree_seed(a_nodes, kept_sets):
 def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   hist_weight=0.5, present_factor=1.0, present_growth=1.4,
                   max_iters=40, batch_size=128, max_rounds=100_000,
-                  refine_passes=2):
+                  refine_passes=2, smooth=True):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -155,7 +164,11 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     walled in and its net can never route.
 
     refine_passes: post-negotiation slack-recovery reroutes (_refine), run
-    only when negotiation ended at overuse 0. 0 disables."""
+    only when negotiation ended at overuse 0. 0 disables.
+
+    smooth: emit legality-checked 45-degree geometry (smooth.py) onto
+    RouteResult.tracks/.vias; wirelength_mm/via_count then measure the
+    smoothed copper. False leaves them None (raw paths_to_tracks only)."""
     import mlx.core as mx
     import wavefront
 
@@ -331,13 +344,34 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
 
     t0 = time.perf_counter()
     tracks, vias = paths_to_tracks(lat, net_paths)
-    wirelength = sum(abs(x2 - x1) + abs(y2 - y1)
-                     for x1, y1, x2, y2, _, _ in tracks)  # segments are axis-aligned
+    sm_tracks = sm_vias = None
+    if smooth:
+        from smooth import polylines_to_tracks, smooth_net_paths
+        # Occupancy: every routed node of every net, plus pad ownership
+        # (node_owner already carries build_connections' claims). Path nodes
+        # overlay pad rectangles so an extra_allow crossing reads as the
+        # crossing net — conservative for the pad's own net near it.
+        occupied = dict(node_owner)
+        for net, paths in net_paths.items():
+            for path in paths:
+                for v in path:
+                    occupied[v] = net
+        sm_tracks = polylines_to_tracks(
+            smooth_net_paths(lat, net_paths, occupied,
+                             pad_nodes=frozenset(node_owner)))
+        sm_vias = vias  # smoothing preserves vias and layer splits exactly
+    if sm_tracks is not None:
+        wirelength = sum(math.hypot(x2 - x1, y2 - y1)
+                         for x1, y1, x2, y2, _, _ in sm_tracks)
+    else:
+        wirelength = sum(abs(x2 - x1) + abs(y2 - y1)
+                         for x1, y1, x2, y2, _, _ in tracks)  # axis-aligned
     sec["emit"] = time.perf_counter() - t0
 
     return RouteResult(net_paths=net_paths, failed=failed, conflicts=conflicts,
                        iterations=iterations, overuse_curve=overuse_curve,
-                       wirelength_mm=wirelength, via_count=len(vias), seconds=sec)
+                       wirelength_mm=wirelength, via_count=len(vias), seconds=sec,
+                       tracks=sm_tracks, vias=sm_vias)
 
 
 def _net_stays_connected(net_conns, conn, cand):
@@ -574,8 +608,13 @@ def net_pads_for_board(board, lat, node_owner=None):
     return net_pads
 
 
-def route_board(board_path, pitch_mm=1.0, layer_names=None, **kwargs):
-    """Load, lattice, route. Returns (board, lat, RouteResult)."""
+def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
+                via_cost=8.0, dir_penalty=1.25, **kwargs):
+    """Load, lattice, route. Returns (board, lat, RouteResult).
+
+    directions/via_cost/dir_penalty go to lattice_for_board (board-routing
+    defaults: both-direction layers, expensive vias); **kwargs go to
+    route_lattice."""
     from board import load_board
     from lattice import lattice_for_board, pad_overlap_allowances
 
@@ -584,7 +623,10 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, **kwargs):
     t_load = time.perf_counter() - t0
     t0 = time.perf_counter()
     lat, _pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
-                                                    layer_names=layer_names)
+                                                    layer_names=layer_names,
+                                                    directions=directions,
+                                                    via_cost=via_cost,
+                                                    dir_penalty=dir_penalty)
     extra_allow = pad_overlap_allowances(brd, lat)
     t_lat = time.perf_counter() - t0
     res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
@@ -625,11 +667,25 @@ def main(argv=None):
     ap.add_argument("--svg", default=None)
     ap.add_argument("--no-refine", action="store_true",
                     help="skip the post-negotiation slack-recovery pass")
+    ap.add_argument("--no-smooth", action="store_true",
+                    help="emit raw 90-degree lattice geometry instead of "
+                         "legality-checked 45-degree smoothing")
+    ap.add_argument("--via-cost", type=float, default=8.0,
+                    help="lattice via edge cost in grid-step units (default 12)")
+    ap.add_argument("--dir-penalty", type=float, default=1.25,
+                    help="cost multiplier for a layer's non-preferred direction "
+                         "(directions=both only, default 1.25)")
+    ap.add_argument("--directions", choices=("both", "alternating"), default="both",
+                    help="both: every layer H+V with preferred-direction pricing; "
+                         "alternating: one direction per layer (default both)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers,
-                                refine_passes=0 if args.no_refine else 2)
+                                directions=args.directions, via_cost=args.via_cost,
+                                dir_penalty=args.dir_penalty,
+                                refine_passes=0 if args.no_refine else 2,
+                                smooth=not args.no_smooth)
 
     failed_nets = {n for n, _ in res.failed}
     routable = set(res.net_paths) | failed_nets
