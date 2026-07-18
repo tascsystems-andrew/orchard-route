@@ -21,11 +21,17 @@ Choices that matter:
 - If max_iters exhausts with overuse left, a final first-come greedy pass keeps
   one net per contested node and fails the rest: the returned result is always
   legal, never optimistic.
+- When negotiation ends at overuse 0, a refinement pass (_refine) reroutes
+  every connection against the FINISHED board — other nets' paths as hard
+  obstacles, no hist/present pricing — and adopts strictly-shorter results.
+  Negotiation prices nodes by their history, so a net routed late detours
+  around congestion that no longer exists; refine recovers that slack and is
+  built so it can never trade legality for it.
 - paths_to_tracks dedupes same-net lattice edges/vias across paths before
   merging collinear runs: a shared trunk emits its copper once.
 
 CLI: python pathfinder.py BOARD.kicad_pcb [--pitch 1.0] [--layers F.Cu,B.Cu]
-     [--svg out.svg]
+     [--svg out.svg] [--no-refine]
 """
 import time
 from dataclasses import dataclass
@@ -116,16 +122,40 @@ def build_connections(net_pads):
     return conns, conflicts, claim
 
 
+def _own_tree_seed(a_nodes, kept_sets):
+    """Side-aware source seeding: the a-side pad nodes plus every kept-path
+    component of the net reachable (via kept paths) from them. Seeding only
+    the a-side keeps a connection from terminating without joining its two
+    sides; seeding the whole reachable component makes own-tree reuse free."""
+    seed = set(a_nodes)
+    pending = list(kept_sets)
+    changed = True
+    while changed:
+        changed, rest = False, []
+        for s in pending:
+            if s & seed:
+                seed |= s
+                changed = True
+            else:
+                rest.append(s)
+        pending = rest
+    return seed
+
+
 def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   hist_weight=0.5, present_factor=1.0, present_growth=1.4,
-                  max_iters=40, batch_size=128, max_rounds=100_000):
+                  max_iters=40, batch_size=128, max_rounds=100_000,
+                  refine_passes=2):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
     per-net holes in the ownership masks where the INPUT board already
     overlaps different-net pad copper — crossing there creates no short the
     fab won't. Without it, a pad nested inside a bigger pad's copper is
-    walled in and its net can never route."""
+    walled in and its net can never route.
+
+    refine_passes: post-negotiation slack-recovery reroutes (_refine), run
+    only when negotiation ended at overuse 0. 0 disables."""
     import mlx.core as mx
     import wavefront
 
@@ -187,20 +217,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             sources = []
             for b, c in enumerate(chunk):
                 blk[:, b] = net_mask(c.net)
-                # Side-aware seeding: a-pad plus every kept-path component of
-                # this net reachable from it — own-tree reuse becomes free.
-                seed = set(c.a_nodes)
-                pending = list(kept_by_net.get(c.net, []))
-                changed = True
-                while changed:
-                    changed, rest = False, []
-                    for s in pending:
-                        if s & seed:
-                            seed |= s
-                            changed = True
-                        else:
-                            rest.append(s)
-                    pending = rest
+                # Own-tree reuse becomes free at the source set (_own_tree_seed).
+                seed = _own_tree_seed(c.a_nodes, kept_by_net.get(c.net, []))
                 blk[list(seed | set(c.b_nodes)), b] = 0
                 sources.append(sorted(int(n) for n in seed))
             t0 = time.perf_counter()
@@ -296,6 +314,14 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                 for v in c.path:
                     claimed[v] = c.net
 
+    if refine_passes > 0 and overuse_curve and overuse_curve[-1] == 0:
+        t0 = time.perf_counter()
+        before, after = _refine(lat, conns, net_mask, rp, ci, wt, N,
+                                refine_passes, batch_size, max_rounds)
+        sec["refine"] = time.perf_counter() - t0
+        sec["refine_gain_pct"] = (100.0 * (before - after) / before
+                                  if before > 0 else 0.0)
+
     net_paths, failed = {}, []
     for c in conns:
         if c.path is not None:
@@ -312,6 +338,157 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     return RouteResult(net_paths=net_paths, failed=failed, conflicts=conflicts,
                        iterations=iterations, overuse_curve=overuse_curve,
                        wirelength_mm=wirelength, via_count=len(vias), seconds=sec)
+
+
+def _net_stays_connected(net_conns, conn, cand):
+    """Would swapping `conn`'s path for `cand` keep the net's pads joined?
+
+    Other connections of the net may terminate ON conn's old path (own-tree
+    seeding), so replacing it can strand them with zero overuse — a break the
+    legality audit cannot see. Model the net as blobs (every connection's
+    path plus every pad node set), merge blobs that share a node, and require
+    all pads to land in one component."""
+    blobs, pads = [set(cand)], []
+    for o in net_conns:
+        if o is not conn:
+            blobs.append(set(o.path))
+        for p in (o.a_nodes, o.b_nodes):
+            ps = set(p)
+            blobs.append(ps)
+            pads.append(ps)
+    comps = []
+    for s in blobs:
+        merged, rest = set(s), []
+        for cs in comps:
+            if cs & merged:
+                merged |= cs
+            else:
+                rest.append(cs)
+        comps = rest + [merged]
+    comp = next(cs for cs in comps if next(iter(pads[0])) in cs)
+    return all(next(iter(p)) in comp for p in pads)
+
+
+def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
+            max_rounds):
+    """Post-negotiation slack recovery. Reroute every routed connection
+    against the FINISHED board — every node of every OTHER net's current path
+    a hard obstacle, no hist/present pricing — and adopt a candidate only if
+    it is strictly cheaper (backtrace.path_cost, wirelength + via weights).
+
+    Legality is structural here, not negotiated: blocking makes a candidate
+    conflict-free against the batch's snapshot. Two planes in one batch can
+    still collide with EACH OTHER (each avoided only the other's OLD path),
+    so adoption is sequential: a candidate touching a node claimed by an
+    earlier adoption of a DIFFERENT net this batch is dropped, and an
+    adopter's old nodes are NOT freed for later planes (the snapshot stays
+    conservative; the next batch/pass picks up the slack). Intra-net safety
+    is _net_stays_connected. Returns (cost_before, cost_after)."""
+    import mlx.core as mx
+    import wavefront
+    from backtrace import path_cost
+
+    def total_cost():
+        return sum(path_cost(c.path, lat.row_ptr, lat.col_idx, lat.weight)
+                   for c in conns if c.path is not None)
+
+    routed = [c for c in conns if c.path is not None]
+    cost_before = total_cost()
+    for _ in range(refine_passes if routed else 0):
+        for lo in range(0, len(routed), batch_size):
+            chunk = routed[lo:lo + batch_size]
+            # Fresh snapshot every batch, not just every pass: earlier
+            # batches' adoptions must be obstacles (and seeds) here.
+            by_net = {}
+            for c in conns:
+                if c.path is not None:
+                    by_net.setdefault(c.net, []).append(c)
+            used_all = np.zeros(N, dtype=np.uint8)
+            own_nodes = {}
+            for net, cs in by_net.items():
+                nodes = set().union(*(set(c.path) for c in cs))
+                own_nodes[net] = nodes
+                used_all[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
+
+            blk = np.zeros((N, len(chunk)), dtype=np.uint8)
+            sources, targets = [], []
+            for b, c in enumerate(chunk):
+                own = own_nodes[c.net]
+                m = net_mask(c.net)
+                col = m | used_all
+                idx = np.fromiter(own, dtype=np.int64, count=len(own))
+                col[idx] = m[idx]  # own path nodes: pad rule only
+                # Seed exactly like the main loop, with c itself treated as
+                # ripped — its own old path is neither seed nor obstacle.
+                # But NEVER free a node a foreign path occupies: the main
+                # loop's force-clear of own pad nodes is safe only because
+                # negotiation re-tallies; here a pad node carried by another
+                # net (extra_allow overlap) must stay a hard obstacle, and
+                # can be neither source nor target.
+                kept = [set(o.path) for o in by_net[c.net] if o is not c]
+                seed = _own_tree_seed(c.a_nodes, kept)
+                foreign = {int(v) for v in (seed | set(c.b_nodes))
+                           if used_all[v] and v not in own}
+                seed -= foreign
+                tgts = [int(n) for n in c.b_nodes if int(n) not in foreign]
+                if seed and tgts:
+                    col[list(seed | set(tgts))] = 0
+                blk[:, b] = col
+                sources.append(sorted(int(n) for n in seed) if tgts else [])
+                targets.append(tgts)
+
+            dist, _rounds, converged = wavefront.batched_sssp(
+                rp, ci, wt, N, sources, blocked=mx.array(blk),
+                max_rounds=max_rounds)
+            if not converged:
+                continue  # best-effort: keep every old path
+            claimed = {}  # node -> net adopted this batch
+            for b, c in enumerate(chunk):
+                if not sources[b] or not targets[b]:
+                    continue
+                dcol = np.ascontiguousarray(np.asarray(dist[:, b], dtype=np.float64))
+                blist = targets[b]
+                target = int(blist[int(np.argmin(dcol[blist]))])
+                td = float(dcol[target])
+                if not np.isfinite(td):
+                    continue
+                try:
+                    cand = extract_path(dcol, lat.row_ptr, lat.col_idx,
+                                        lat.weight, target, tol=1e-3 + 1e-6 * td)
+                except ValueError:
+                    continue
+                new_cost = path_cost(cand, lat.row_ptr, lat.col_idx, lat.weight)
+                old_cost = path_cost(c.path, lat.row_ptr, lat.col_idx, lat.weight)
+                if not new_cost < old_cost - 1e-6:
+                    continue
+                if any(claimed.get(v, c.net) != c.net for v in cand):
+                    continue
+                if not _net_stays_connected(by_net[c.net], c, cand):
+                    continue
+                c.path = cand
+                for v in cand:
+                    claimed[v] = c.net
+    cost_after = total_cost()
+
+    # Legality audit: refine improving cost by creating overuse would be a
+    # silent regression — make it loud instead.
+    nodes_by_net = {}
+    for c in conns:
+        if c.path is not None:
+            nodes_by_net.setdefault(c.net, set()).update(c.path)
+    usage = np.zeros(N, dtype=np.int32)
+    for nodes in nodes_by_net.values():
+        usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1
+    over_nodes = np.flatnonzero(usage > 1)
+    if over_nodes.size:
+        detail = [(int(v), lat.coords(int(v)),
+                   sorted(net for net, nodes in nodes_by_net.items()
+                          if int(v) in nodes))
+                  for v in over_nodes[:20].tolist()]
+        raise AssertionError(
+            f"refine broke legality: {over_nodes.size} overused node(s); "
+            f"first (node, (x, y, layer), nets): {detail}")
+    return cost_before, cost_after
 
 
 def _runs(values):
@@ -446,10 +623,13 @@ def main(argv=None):
     ap.add_argument("--pitch", type=float, default=1.0)
     ap.add_argument("--layers", default="F.Cu,B.Cu")
     ap.add_argument("--svg", default=None)
+    ap.add_argument("--no-refine", action="store_true",
+                    help="skip the post-negotiation slack-recovery pass")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
-    brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers)
+    brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers,
+                                refine_passes=0 if args.no_refine else 2)
 
     failed_nets = {n for n, _ in res.failed}
     routable = set(res.net_paths) | failed_nets
@@ -465,7 +645,10 @@ def main(argv=None):
     print(f"overuse     : {res.overuse_curve}")
     print(f"wirelength  : {res.wirelength_mm:.1f} mm")
     print(f"vias        : {res.via_count}")
-    print("seconds     : " + " | ".join(f"{k} {v:.2f}" for k, v in res.seconds.items()))
+    if "refine_gain_pct" in res.seconds:
+        print(f"refine      : path cost -{res.seconds['refine_gain_pct']:.2f}%")
+    print("seconds     : " + " | ".join(f"{k} {v:.2f}" for k, v in res.seconds.items()
+                                        if not k.endswith("_pct")))
     for net, reason in res.failed[:10]:
         print(f"  failed net {net} ({brd.nets.get(net, '?')}): {reason}")
     if len(res.failed) > 10:

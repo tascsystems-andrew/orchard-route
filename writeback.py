@@ -26,13 +26,30 @@ per line, tab indentation, attribute order start/end/width/layer/net/uuid
 rounded to 6 decimals with trailing zeros stripped, as pcbnew writes them.
 Vias span the file's outermost copper layers (F.Cu .. B.Cu).
 
+Track widths and via sizes are per net. KiCad keeps net classes in the
+PROJECT file, not the board: BOARD.kicad_pro (JSON) carries
+net_settings.classes and the net->class maps (see load_net_class_widths).
+The CLI reads the sibling .kicad_pro when present, lets --width-map override
+it per net-name glob, and caps track widths at the lattice pitch (a 0.8 mm
+trace on a 0.5 mm grid overlaps its neighbors) unless --max-width says
+otherwise.
+
 CLI: python writeback.py BOARD.kicad_pcb OUT.kicad_pcb [--pitch 0.5]
-     [--layers F.Cu,B.Cu]
+     [--layers F.Cu,B.Cu] [--width-map "GLOB=W[:VIA:DRILL],..."]
+     [--max-width MM]
 """
+import fnmatch
+import json
 import os
 import uuid
 
 from board import parse_sexpr, QStr
+
+# Emitter defaults, unchanged from the original single-width writeback: what
+# a net gets when no project class and no --width-map entry claims it.
+DEFAULT_TRACK_MM = 0.25
+DEFAULT_VIA_MM = 0.6
+DEFAULT_DRILL_MM = 0.3
 
 
 def _kids(node, tag):
@@ -87,14 +104,164 @@ def _file_facts(root):
     return net_by_name, with_uuid, span
 
 
+def project_file_for(board_path):
+    """Sibling BOARD.kicad_pro for BOARD.kicad_pcb, or None if absent."""
+    pro = os.path.splitext(board_path)[0] + ".kicad_pro"
+    return pro if os.path.isfile(pro) else None
+
+
+def load_net_class_widths(pro_path, nets,
+                          track_width_mm=DEFAULT_TRACK_MM,
+                          via_size_mm=DEFAULT_VIA_MM,
+                          via_drill_mm=DEFAULT_DRILL_MM):
+    """net_code -> (track_width_mm, via_size_mm, via_drill_mm) for every net,
+    from the .kicad_pro's net classes.
+
+    Format, checked empirically against the Voxy-family projects (all of
+    which carry a single "Default" class, null assignments, [] patterns):
+    net_settings.classes is a list of class dicts with name / track_width /
+    via_diameter / via_drill (plus clearance etc. we don't need), and nets
+    map to classes two ways — net_settings.netclass_assignments (net name ->
+    class name, or -> list of class names; null when empty) and
+    net_settings.netclass_patterns ([{"pattern": glob, "netclass": name}]).
+
+    Resolution per net: explicit assignment wins over patterns; among several
+    candidate classes the lowest "priority" number wins (KiCad: lower number
+    = higher priority; Default carries INT_MAX), ties broken by listed order;
+    no class at all means the Default class. Any value a class omits (or
+    stores as <= 0) falls back to the Default class, then to the function
+    defaults — so a project with no usable classes yields a clean map of
+    function defaults. Malformed JSON raises; the caller decides.
+    Pattern matching is fnmatch.fnmatchcase: KiCad net names are
+    case-sensitive on every platform.
+    """
+    with open(pro_path, encoding="utf-8") as f:
+        pro = json.load(f)
+    ns = pro.get("net_settings") or {}
+    classes = [c for c in (ns.get("classes") or []) if isinstance(c, dict)]
+    by_name = {str(c.get("name")): c for c in classes}
+    default_cls = by_name.get("Default", {})
+    fallback = (track_width_mm, via_size_mm, via_drill_mm)
+
+    def value(cls, key, i):
+        for src in (cls, default_cls):
+            v = src.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return float(v)
+        return fallback[i]
+
+    def triple(cls):
+        return (value(cls, "track_width", 0),
+                value(cls, "via_diameter", 1),
+                value(cls, "via_drill", 2))
+
+    assignments = ns.get("netclass_assignments") or {}
+    patterns = [p for p in (ns.get("netclass_patterns") or [])
+                if isinstance(p, dict)]
+
+    def candidates(name):
+        a = assignments.get(name)
+        names = [a] if isinstance(a, str) else \
+            [n for n in a if isinstance(n, str)] if isinstance(a, list) else []
+        found = [by_name[n] for n in names if n in by_name]
+        if not found:
+            found = [by_name[str(p.get("netclass"))] for p in patterns
+                     if str(p.get("netclass")) in by_name and p.get("pattern")
+                     and fnmatch.fnmatchcase(name, str(p["pattern"]))]
+        return found
+
+    out = {}
+    for code, name in nets.items():
+        cands = candidates(str(name))
+        cls = min(cands, key=lambda c: c.get("priority", 2**31 - 1)) \
+            if cands else default_cls
+        out[code] = triple(cls)
+    return out
+
+
+def parse_width_map(spec):
+    """--width-map "GLOB=width[:via_size:via_drill],..." ->
+    [(glob, track_mm, via_mm_or_None, drill_mm_or_None)] in listed order."""
+    entries = []
+    for raw in spec.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        glob, eq, val = raw.rpartition("=")
+        parts = val.split(":")
+        if not eq or not glob or len(parts) not in (1, 3):
+            raise ValueError(
+                f"bad --width-map entry {raw!r}: want GLOB=width or "
+                f"GLOB=width:via_size:via_drill")
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            raise ValueError(f"bad --width-map entry {raw!r}: "
+                             f"non-numeric width") from None
+        if any(n <= 0 for n in nums):
+            raise ValueError(f"bad --width-map entry {raw!r}: "
+                             f"widths must be > 0")
+        entries.append((glob, nums[0],
+                        nums[1] if len(nums) == 3 else None,
+                        nums[2] if len(nums) == 3 else None))
+    return entries
+
+
+def apply_width_map(widths, nets, entries,
+                    track_width_mm=DEFAULT_TRACK_MM,
+                    via_size_mm=DEFAULT_VIA_MM,
+                    via_drill_mm=DEFAULT_DRILL_MM):
+    """Overlay parsed --width-map entries onto a net_code -> triple dict.
+
+    Entries apply in listed order, so a later glob overrides an earlier one
+    ("*=0.3,GND=0.8" widens GND, not the reverse). A width-only entry keeps
+    whatever via pair the net had already resolved to (project class or
+    function defaults). Nets matching no glob keep their existing triple, or
+    stay absent so the emitter's scalar defaults apply. Returns a new dict.
+    """
+    out = dict(widths)
+    for code, name in nets.items():
+        for glob, tw, vs, vd in entries:
+            if fnmatch.fnmatchcase(str(name), glob):
+                base = out.get(code, (track_width_mm, via_size_mm,
+                                      via_drill_mm))
+                out[code] = (tw, vs if vs is not None else base[1],
+                             vd if vd is not None else base[2])
+    return out
+
+
+def cap_track_widths(widths, nets, max_width_mm):
+    """Cap track widths at max_width_mm; returns (capped dict, sorted names
+    of the nets that were capped).
+
+    The CLI default cap is the lattice pitch: a trace wider than the pitch
+    spills onto the neighboring grid line's copper, so a project class meant
+    for free-form routing would silently short lattice neighbors. Via sizes
+    are deliberately NOT capped — the stock 0.6 mm via already exceeds the
+    0.5 mm default pitch, and vias land on pad/grid sites the router itself
+    keeps nets apart on; capping them would change long-standing default
+    output for no clearance gain."""
+    capped, hit = dict(widths), []
+    for code, (tw, vs, vd) in widths.items():
+        if tw > max_width_mm + 1e-9:
+            capped[code] = (max_width_mm, vs, vd)
+            hit.append(str(nets.get(code, code)))
+    return capped, sorted(hit)
+
+
 def write_routed_copy(board_path, out_path, tracks, vias, nets,
-                      track_width_mm=0.25, via_size_mm=0.6, via_drill_mm=0.3):
+                      track_width_mm=DEFAULT_TRACK_MM,
+                      via_size_mm=DEFAULT_VIA_MM,
+                      via_drill_mm=DEFAULT_DRILL_MM, widths=None):
     """Append the router's copper to a copy of board_path, written to out_path.
 
     tracks: (x1_mm, y1_mm, x2_mm, y2_mm, layer_name, net_code) as produced by
     pathfinder.paths_to_tracks; vias: (x_mm, y_mm, net_code); nets: Board.nets
-    (net_code -> name). The source file is read-only; out_path must not
-    resolve to the source file or into its directory.
+    (net_code -> name). widths: optional net_code -> (track_width_mm,
+    via_size_mm, via_drill_mm) overriding the scalar defaults per net —
+    build it from load_net_class_widths / apply_width_map; nets absent from
+    the dict fall back to the scalars. The source file is read-only;
+    out_path must not resolve to the source file or into its directory.
     """
     src = os.path.realpath(board_path)
     dst = os.path.realpath(out_path)
@@ -118,23 +285,27 @@ def write_routed_copy(board_path, out_path, tracks, vias, nets,
     def uuid_line():
         return f"\t\t(uuid \"{uuid.uuid4()}\")\n" if with_uuid else ""
 
+    widths = widths or {}
+    default_triple = (track_width_mm, via_size_mm, via_drill_mm)
+
     parts = []
     for x1, y1, x2, y2, layer, code in tracks:
         parts.append(
             "\t(segment\n"
             f"\t\t(start {_fmt(x1)} {_fmt(y1)})\n"
             f"\t\t(end {_fmt(x2)} {_fmt(y2)})\n"
-            f"\t\t(width {_fmt(track_width_mm)})\n"
+            f"\t\t(width {_fmt(widths.get(code, default_triple)[0])})\n"
             f"\t\t(layer {_quote(layer)})\n"
             f"\t\t{net_attr(code)}\n"
             + uuid_line() +
             "\t)\n")
     for x, y, code in vias:
+        _, via_mm, drill_mm = widths.get(code, default_triple)
         parts.append(
             "\t(via\n"
             f"\t\t(at {_fmt(x)} {_fmt(y)})\n"
-            f"\t\t(size {_fmt(via_size_mm)})\n"
-            f"\t\t(drill {_fmt(via_drill_mm)})\n"
+            f"\t\t(size {_fmt(via_mm)})\n"
+            f"\t\t(drill {_fmt(drill_mm)})\n"
             f"\t\t(layers {_quote(cu_top)} {_quote(cu_bot)})\n"
             f"\t\t{net_attr(code)}\n"
             + uuid_line() +
@@ -157,6 +328,12 @@ def main(argv=None):
     ap.add_argument("out")
     ap.add_argument("--pitch", type=float, default=0.5)
     ap.add_argument("--layers", default="F.Cu,B.Cu")
+    ap.add_argument("--width-map", default="", metavar="GLOB=W[:VIA:DRILL],...",
+                    help="per-net width overrides by net-name glob, applied "
+                         "after project net classes; last matching glob wins")
+    ap.add_argument("--max-width", type=float, default=None,
+                    help="cap emitted track widths at this many mm "
+                         "(default: the lattice pitch)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
@@ -164,8 +341,22 @@ def main(argv=None):
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                 layer_names=layers)
     tracks, vias = paths_to_tracks(lat, res.net_paths)
-    write_routed_copy(args.board, args.out, tracks, vias, brd.nets)
+
+    pro = project_file_for(args.board)
+    widths = load_net_class_widths(pro, brd.nets) if pro else {}
+    if args.width_map:
+        widths = apply_width_map(widths, brd.nets,
+                                 parse_width_map(args.width_map))
+    max_width = args.max_width if args.max_width is not None else args.pitch
+    widths, capped = cap_track_widths(widths, brd.nets, max_width)
+    if capped:
+        print(f"WARNING     : track width capped at {_fmt(max_width)} mm "
+              f"(grid overlap) for {len(capped)} net(s): {', '.join(capped)}")
+
+    write_routed_copy(args.board, args.out, tracks, vias, brd.nets,
+                      widths=widths)
     print(f"wrote       : {args.out}")
+    print(f"net classes : {pro or 'none (emitter defaults)'}")
     print(f"tracks      : {len(tracks)} appended ({len(brd.tracks)} already in file)")
     print(f"vias        : {len(vias)} appended ({len(brd.vias)} already in file)")
     if res.failed:
