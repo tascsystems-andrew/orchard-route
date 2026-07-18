@@ -193,16 +193,20 @@ def check_sparkfun(board):
 
 
 if __name__ == "__main__":
-    primary = load_board(PRIMARY)
-    second = load_board(SECOND)
+    checked = 0
 
-    summarize(primary)
-    check_common(primary)
-    check_primary(primary)
-
-    summarize(second)
-    check_common(second)
-    check_second(second)
+    for path, checkers in ((PRIMARY, (check_common, check_primary)),
+                           (SECOND, (check_common, check_second))):
+        if not os.path.exists(path):
+            print(f"\nSKIP {os.path.basename(path)}: fixture absent "
+                  f"(laptop-local amp project — normal on other machines, "
+                  f"see STUDIO.md)")
+            continue
+        brd = load_board(path)
+        summarize(brd)
+        for c in checkers:
+            c(brd)
+        checked += 1
 
     for path, checker in ((PICO_VGA, check_pico_vga), (SPARKFUN, check_sparkfun)):
         if not os.path.exists(path):
@@ -213,7 +217,14 @@ if __name__ == "__main__":
         summarize(brd)
         check_common(brd)
         checker(brd)
+        checked += 1
 
+    if checked == 0:
+        print("\nRESULT: NO FIXTURES — nothing was checked on this machine. "
+              "Fetch bench boards per bench/boards/SOURCES.md to make this "
+              "suite meaningful here.")
+        raise SystemExit(0)
     print(f"\nRESULT: {'PASS' if not failures else 'FAIL'} "
-          f"({len(failures)} failed check{'s' if len(failures) != 1 else ''})")
+          f"({checked} fixture{'s' if checked != 1 else ''}, "
+          f"{len(failures)} failed check{'s' if len(failures) != 1 else ''})")
     raise SystemExit(1 if failures else 0)
