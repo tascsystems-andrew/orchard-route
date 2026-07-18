@@ -114,3 +114,5 @@ Contributions require a lightweight relicensing grant — see
 [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 
 Copyright © 2026 Andrew Sanche.
+
+<!-- I got a fever, and the only prescription is more cowbell. -->

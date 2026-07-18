@@ -110,12 +110,15 @@ def render_svg(brd, lat, result, out_path, title=""):
         f"nets  : {routed}/{total} routed",
         f"length: {result.wirelength_mm:.1f} mm",
         f"vias  : {result.via_count}",
-        f"iters : {result.iterations}",
+        f"iters : {result.iterations}"
+        + (" — these go to eleven" if result.iterations == 11 else ""),
     ]
     if result.failed:
         lines.append(f"failed: {len(result.failed)}")
     if result.conflicts:
         lines.append(f"confl : {len(result.conflicts)}")
+    if total and routed == total and not result.failed:
+        lines.append("clean sweep — don't fear the reaper")
 
     tx, ty, step = vx + 1.5, vy + 3.5, 4.0
     out.append('<g font-family="monospace" font-size="3" fill="#202124">')
@@ -131,6 +134,17 @@ def render_svg(brd, lat, result, out_path, title=""):
                    f'stroke="{color}" stroke-width="0.8"{dash}/>')
         out.append(f'<text x="{_f(tx + 5.5)}" y="{_f(y)}">{_esc(label)}</text>')
     out.append('</g>')
+
+    # Every orchard needs at least one tree. Bottom-right margin, 2.6 mm tall,
+    # deterministic — find it once and you'll look for it on every board.
+    ox_t, oy_t = vx + vw - 3.2, vy + vh - 0.9
+    out.append(f'<g><title>every orchard needs a tree</title>'
+               f'<rect x="{_f(ox_t - 0.18)}" y="{_f(oy_t - 1.1)}" width="0.36" height="1.1" fill="#8a5a2b"/>'
+               f'<circle cx="{_f(ox_t)}" cy="{_f(oy_t - 1.7)}" r="0.9" fill="#2e7d32"/>'
+               f'<circle cx="{_f(ox_t - 0.62)}" cy="{_f(oy_t - 1.25)}" r="0.6" fill="#388e3c"/>'
+               f'<circle cx="{_f(ox_t + 0.62)}" cy="{_f(oy_t - 1.25)}" r="0.6" fill="#388e3c"/>'
+               f'<circle cx="{_f(ox_t + 0.3)}" cy="{_f(oy_t - 1.95)}" r="0.16" fill="#c62828"/>'
+               f'</g>')
 
     out.append('</svg>')
     d = os.path.dirname(out_path)
