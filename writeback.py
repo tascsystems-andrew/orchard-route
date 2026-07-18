@@ -1,14 +1,19 @@
-"""L0 output: emit a routed COPY of a .kicad_pcb that KiCad will open.
+"""L0 output: emit a routed or component-moved COPY of a .kicad_pcb.
 
-The original board file is never touched: the file's text is read, the
-router's tracks and vias are appended as (segment ...) / (via ...) nodes just
-before the final closing paren, and the result is written to a DIFFERENT
-path. write_routed_copy refuses an out_path that resolves into the source
-board's own directory — routed copies belong in the router's out/ tree, not
-next to the user's live project.
+The original board file is never touched: the file's text is read, edited in
+memory only, and written to a DIFFERENT path. Both writers refuse an
+out_path that resolves into the source board's own directory — output copies
+belong in the router's out/ tree, not next to the user's live project.
 
-Two format facts, checked empirically against the Voxy boards, drive the
-emitter:
+- write_routed_copy appends the router's (segment ...) / (via ...) nodes
+  just before the final closing paren.
+- write_moved_copy rewrites named footprints' (at x y [rot]) nodes in place
+  (the region solver's placement candidates), leaving every other byte of
+  the file untouched. It handles both the KiCad 6+ (footprint ...) and the
+  KiCad 5 (module ...) form, since board.py parses both.
+
+Three format facts, checked empirically against the Voxy boards, drive the
+emitters:
 
 - KiCad 10 (version 20260206) segments/vias reference nets BY NAME only —
   (net "Audio Input P1"), (net "") for the unconnected net — because the
@@ -19,6 +24,17 @@ emitter:
 - Every KiCad 8+ node carries a (uuid "..."); fresh uuid4s are emitted iff
   the file's own segment/via nodes carry them (falling back to the version
   header when the file has no tracks yet to inspect).
+- Pad (at x y [angle]) angles are ABSOLUTE: the footprint's rotation is
+  baked into every pad's own angle (board.py documents the same quirk from
+  the read side), while the pad's x/y offset stays footprint-local. Checked
+  in both generations: the hifi board's Valve_ECC-83-2 at -90 carries pads
+  at 216/252/288/324 (the footprint's -90 folded into the library angles),
+  and the KiCad 5 pico-vga R_0402s at 90 carry their
+  angle-0 library pads as (at ±0.485 0 90). A zero angle is OMITTED, not
+  written as 0 — the same valve writes pad 5 as (at -3.4373 -13.631278).
+  So rotating a footprint means rewriting every pad's angle field by the
+  same delta (re-omitting exact zeros), and moving without rotating must
+  leave the pads' nodes alone.
 
 Emitted nodes copy the KiCad 10 pretty-printer shape exactly — one attribute
 per line, tab indentation, attribute order start/end/width/layer/net/uuid
@@ -41,7 +57,9 @@ CLI: python writeback.py BOARD.kicad_pcb OUT.kicad_pcb [--pitch 0.5]
 import fnmatch
 import json
 import os
+import re
 import uuid
+from dataclasses import dataclass, field
 
 from board import parse_sexpr, QStr
 
@@ -66,6 +84,19 @@ def _fmt(v):
 
 def _quote(name):
     return '"' + str(name).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _refuse_source_dir(board_path, out_path):
+    """The input board is READ-ONLY (AGENTS.md hard rule 1). Refuse any
+    out_path that is the source file or lands in its directory; returns the
+    resolved destination path. Shared by every writer in this module."""
+    src = os.path.realpath(board_path)
+    dst = os.path.realpath(out_path)
+    if dst == src or os.path.dirname(dst) == os.path.dirname(src):
+        raise ValueError(
+            f"refusing to write {out_path!r} into the source board's own "
+            f"directory — output copies go elsewhere (e.g. out/)")
+    return dst
 
 
 def _file_facts(root):
@@ -135,12 +166,7 @@ def load_net_class_widths(pro_path, nets,
     Pattern matching is fnmatch.fnmatchcase: KiCad net names are
     case-sensitive on every platform.
     """
-    with open(pro_path, encoding="utf-8") as f:
-        pro = json.load(f)
-    ns = pro.get("net_settings") or {}
-    classes = [c for c in (ns.get("classes") or []) if isinstance(c, dict)]
-    by_name = {str(c.get("name")): c for c in classes}
-    default_cls = by_name.get("Default", {})
+    resolved, default_cls = _resolve_net_classes(pro_path, nets)
     fallback = (track_width_mm, via_size_mm, via_drill_mm)
 
     def value(cls, key, i):
@@ -150,10 +176,23 @@ def load_net_class_widths(pro_path, nets,
                 return float(v)
         return fallback[i]
 
-    def triple(cls):
-        return (value(cls, "track_width", 0),
-                value(cls, "via_diameter", 1),
-                value(cls, "via_drill", 2))
+    return {code: (value(cls, "track_width", 0),
+                   value(cls, "via_diameter", 1),
+                   value(cls, "via_drill", 2))
+            for code, cls in resolved.items()}
+
+
+def _resolve_net_classes(pro_path, nets):
+    """Shared class resolution: (net_code -> winning class dict, Default
+    class dict). The winning dict is the Default class (possibly {}) for
+    nets no assignment or pattern claims. Resolution rules are documented on
+    load_net_class_widths, the original consumer."""
+    with open(pro_path, encoding="utf-8") as f:
+        pro = json.load(f)
+    ns = pro.get("net_settings") or {}
+    classes = [c for c in (ns.get("classes") or []) if isinstance(c, dict)]
+    by_name = {str(c.get("name")): c for c in classes}
+    default_cls = by_name.get("Default", {})
 
     assignments = ns.get("netclass_assignments") or {}
     patterns = [p for p in (ns.get("netclass_patterns") or [])
@@ -173,10 +212,20 @@ def load_net_class_widths(pro_path, nets,
     out = {}
     for code, name in nets.items():
         cands = candidates(str(name))
-        cls = min(cands, key=lambda c: c.get("priority", 2**31 - 1)) \
+        out[code] = min(cands, key=lambda c: c.get("priority", 2**31 - 1)) \
             if cands else default_cls
-        out[code] = triple(cls)
-    return out
+    return out, default_cls
+
+
+def load_net_class_names(pro_path, nets):
+    """net_code -> net class NAME for every net in nets, resolved exactly
+    like load_net_class_widths (same shared machinery — one vocabulary, no
+    drift). Nets no class claims report "Default", including on projects
+    that never defined a Default class. The region solver's placement search
+    weights HPWL per class through this map."""
+    resolved, _ = _resolve_net_classes(pro_path, nets)
+    return {code: str(cls["name"]) if "name" in cls else "Default"
+            for code, cls in resolved.items()}
 
 
 def parse_width_map(spec):
@@ -263,12 +312,7 @@ def write_routed_copy(board_path, out_path, tracks, vias, nets,
     the dict fall back to the scalars. The source file is read-only;
     out_path must not resolve to the source file or into its directory.
     """
-    src = os.path.realpath(board_path)
-    dst = os.path.realpath(out_path)
-    if dst == src or os.path.dirname(dst) == os.path.dirname(src):
-        raise ValueError(
-            f"refusing to write {out_path!r} into the source board's own "
-            f"directory — routed copies go elsewhere (e.g. out/)")
+    dst = _refuse_source_dir(board_path, out_path)
 
     with open(board_path, encoding="utf-8") as f:
         text = f.read()
@@ -318,6 +362,258 @@ def write_routed_copy(board_path, out_path, tracks, vias, nets,
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     with open(dst, "w", encoding="utf-8") as f:
         f.write(text[:cut] + "".join(parts) + text[cut:])
+
+
+# ── component moves ──────────────────────────────────────────────────────────
+# write_moved_copy needs byte spans, which board.parse_sexpr discards, so the
+# file is re-tokenized here with the same token grammar and the interesting
+# nodes keep their source offsets. Only footprint/module nodes, their (at ...)
+# and their pads' (at ...) are recorded; everything else passes through
+# byte-identical.
+
+_SEXP_TOKENS = re.compile(r'"(?:[^"\\]|\\.)*"|[()]|[^\s()"]+')
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
+
+
+def _atom_text(tok):
+    """Raw token -> python string: unquote + unescape, same rules board.py
+    applies, so reference names compare equal across both parsers."""
+    if not (len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"'):
+        return tok
+    body = tok[1:-1]
+    if "\\" not in body:
+        return body
+    out, i = [], 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            out.append(_ESCAPES.get(body[i + 1], body[i + 1]))
+            i += 2
+        else:
+            out.append(body[i])
+            i += 1
+    return "".join(out)
+
+
+@dataclass
+class _Node:
+    """One parenthesized node with its source span and direct atoms/kids."""
+    start: int
+    end: int = -1
+    atoms: list = field(default_factory=list)   # (raw_token, start, end)
+    kids: list = field(default_factory=list)
+
+    @property
+    def tag(self):
+        return self.atoms[0][0] if self.atoms else ""
+
+
+def _parse_spans(text):
+    """Root _Node of the first s-expression in text (the kicad_pcb node)."""
+    stack, root = [], None
+    for m in _SEXP_TOKENS.finditer(text):
+        t = m.group(0)
+        if t == "(":
+            stack.append(_Node(start=m.start()))
+        elif t == ")":
+            if not stack:
+                raise ValueError("unbalanced ')' in s-expression")
+            node = stack.pop()
+            node.end = m.end()
+            if stack:
+                stack[-1].kids.append(node)
+            elif root is None:
+                root = node
+        else:
+            if stack:
+                stack[-1].atoms.append((t, m.start(), m.end()))
+    if root is None:
+        raise ValueError("no s-expression found")
+    return root
+
+
+def _at_info(node):
+    """(span, insert_offset, vals, extras) for a node's own (at ...) kid.
+
+    span is None when the node carries no (at ...) — then insert_offset says
+    where a fresh one may be spliced in (before the first kid, KiCad puts
+    (at) first anyway). vals are the leading numeric atoms; extras every
+    atom after the numeric run (e.g. "unlocked"), preserved verbatim."""
+    at = next((k for k in node.kids if k.tag == "at"), None)
+    if at is None:
+        insert = node.kids[0].start if node.kids else node.end - 1
+        return None, insert, (), ()
+    vals, extras = [], []
+    for tok, _, _ in at.atoms[1:]:
+        if not extras:
+            try:
+                vals.append(float(tok))
+                continue
+            except ValueError:
+                pass
+        extras.append(tok)
+    return (at.start, at.end), None, tuple(vals), tuple(extras)
+
+
+@dataclass
+class FootprintRecord:
+    """One (footprint ...) / (module ...) node, with the spans needed to
+    rewrite its placement. Records come in board.py's _footprints order —
+    every (footprint ...) node in file order, then every (module ...) node —
+    so slicing board.load_board(...).pads by cumulative n_pads lines each
+    record up with its parsed pads exactly."""
+    ref: str            # reference designator ("" when the file has none)
+    uref: str           # unique key: ref when unique on the board, else "ref#N"
+    x_mm: float
+    y_mm: float
+    rot_deg: float
+    n_pads: int
+    at_span: tuple      # (start, end) of the footprint's own (at ...), or None
+    at_insert: int      # splice offset used only when at_span is None
+    at_extras: tuple    # non-numeric atoms trailing the numbers, kept verbatim
+    pad_ats: tuple      # per pad: (span_or_None, insert_offset, vals, extras)
+
+
+def _footprint_ref(fp):
+    """Reference designator of a footprint node, across the format's three
+    spellings: (property "Reference" "R4" ...) in KiCad 8+, (fp_text
+    reference "R4" ...) in KiCad 6/7, (fp_text reference R4 ...) in 5."""
+    for k in fp.kids:
+        if k.tag == "property" and len(k.atoms) >= 3 \
+                and _atom_text(k.atoms[1][0]) == "Reference":
+            return _atom_text(k.atoms[2][0])
+        if k.tag == "fp_text" and len(k.atoms) >= 3 \
+                and k.atoms[1][0] == "reference":
+            return _atom_text(k.atoms[2][0])
+    return ""
+
+
+def _footprint_records(root):
+    records = []
+    for tag in ("footprint", "module"):    # board.py's _footprints order
+        for fp in (k for k in root.kids if k.tag == tag):
+            at_span, at_insert, vals, extras = _at_info(fp)
+            pads = tuple(_at_info(p) for p in fp.kids if p.tag == "pad")
+            records.append(FootprintRecord(
+                ref=_footprint_ref(fp), uref="",
+                x_mm=vals[0] if len(vals) > 0 else 0.0,
+                y_mm=vals[1] if len(vals) > 1 else 0.0,
+                rot_deg=vals[2] if len(vals) > 2 else 0.0,
+                n_pads=len(pads), at_span=at_span,
+                at_insert=at_insert if at_insert is not None else -1,
+                at_extras=extras, pad_ats=pads))
+    counts = {}
+    for r in records:
+        counts[r.ref] = counts.get(r.ref, 0) + 1
+    seen = {}
+    for r in records:
+        if counts[r.ref] == 1:
+            r.uref = r.ref
+        else:
+            seen[r.ref] = seen.get(r.ref, 0) + 1
+            r.uref = f"{r.ref}#{seen[r.ref]}"
+    return records
+
+
+def board_footprints(text):
+    """[FootprintRecord] for a .kicad_pcb file's TEXT (not path — the moved
+    and routed copies get scanned too). Duplicate reference designators are
+    legal in KiCad and common on Andrew's boards ("5755" x3, "TP8" x19),
+    so each record carries uref, a unique addressing key: the plain ref when
+    unique, else ref#N with N 1-based in record order."""
+    root = _parse_spans(text)
+    if root.tag != "kicad_pcb":
+        raise ValueError(f"not a kicad_pcb file (root is {root.tag!r})")
+    return _footprint_records(root)
+
+
+def resolve_footprint(records, key):
+    """The one FootprintRecord key addresses, or ValueError. key is a plain
+    ref (must be unique on the board) or the ref#N disambiguator; the error
+    for an ambiguous plain ref spells out the valid disambiguators."""
+    by_uref = {r.uref: r for r in records}
+    if key in by_uref:
+        return by_uref[key]
+    n = sum(1 for r in records if r.ref == key)
+    if n > 1:
+        raise ValueError(
+            f"ref {key!r} matches {n} footprints — disambiguate as "
+            f"{key}#1 .. {key}#{n} (file order)")
+    raise ValueError(
+        f"ref {key!r} not found among the board's {len(records)} footprints")
+
+
+def _norm_fp_rot(deg):
+    """Footprint angle normalized the way pcbnew writes it: (-180, 180]."""
+    a = round(deg % 360.0, 6) % 360.0
+    return a - 360.0 if a > 180.0 else a
+
+
+def _norm_pad_rot(deg):
+    """Pad angle normalized the way pcbnew writes it: [0, 360)."""
+    return round(deg % 360.0, 6) % 360.0
+
+
+def _at_edit(span, insert, x, y, rot, extras):
+    """One text edit (start, end, replacement) rewriting an (at ...) node.
+    A zero angle is omitted, exactly as pcbnew writes it. When the node had
+    no (at ...) at all (span None — pathological but board.py reads it as
+    0,0,0) a fresh node is spliced in at the insert offset instead."""
+    nums = [x, y] + ([rot] if rot != 0.0 else [])
+    body = " ".join([_fmt(n) for n in nums] + [str(e) for e in extras])
+    if span is not None:
+        return span[0], span[1], f"(at {body})"
+    return insert, insert, f"(at {body}) "
+
+
+def write_moved_copy(board_path, out_path, placements):
+    """Rewrite named footprints' placements in a copy of board_path.
+
+    placements: {ref_or_uref: (x_mm, y_mm, rot_deg)} — board coordinates and
+    KiCad's CCW/Y-down degrees, exactly what board.load_board reports and
+    what the region solver's candidates carry. Every named footprint's
+    (at ...) is rewritten in place; when the rotation changes, every pad's
+    baked-in absolute angle is rewritten by the same delta (see the module
+    docstring — pad x/y offsets are footprint-local and stay untouched).
+    Property/text angles are NOT rebaked: board.py does not read them and
+    they only affect silkscreen cosmetics; KiCad reorients them on the next
+    interactive edit.
+
+    The source file is read-only; out_path must not resolve to the source
+    file or into its directory. Everything outside the rewritten (at ...)
+    nodes is byte-identical to the source."""
+    dst = _refuse_source_dir(board_path, out_path)
+    with open(board_path, encoding="utf-8") as f:
+        text = f.read()
+    try:
+        records = board_footprints(text)
+    except ValueError as e:
+        raise ValueError(f"{board_path}: {e}") from None
+
+    edits = []
+    for key, place in placements.items():
+        rec = resolve_footprint(records, key)
+        try:
+            nx, ny, nrot = (float(v) for v in place)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"placement for {key!r} must be (x_mm, y_mm, rot_deg), "
+                f"got {place!r}") from None
+        edits.append(_at_edit(rec.at_span, rec.at_insert,
+                              nx, ny, _norm_fp_rot(nrot), rec.at_extras))
+        delta = nrot - rec.rot_deg
+        if _norm_pad_rot(delta) != 0.0:
+            for span, insert, vals, extras in rec.pad_ats:
+                ox = vals[0] if len(vals) > 0 else 0.0
+                oy = vals[1] if len(vals) > 1 else 0.0
+                pa = vals[2] if len(vals) > 2 else 0.0
+                edits.append(_at_edit(span, insert, ox, oy,
+                                      _norm_pad_rot(pa + delta), extras))
+
+    for start, end, repl in sorted(edits, reverse=True):
+        text = text[:start] + repl + text[end:]
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def main(argv=None):
