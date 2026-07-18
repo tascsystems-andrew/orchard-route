@@ -39,6 +39,36 @@ alternating-layer model is being replaced for 2-layer boards), clearance classes
 not yet enforced (grid pitch is the de-facto clearance), and placement optimization
 is designed but not built.
 
+## Benchmarks — measured against human ground truth
+
+Seven open-hardware boards with professional placement and human routing
+(KiCad's demo boards, Raspberry Pi's RP2040 reference designs, SparkFun's
+RP2350 RedBoard, 1BitSquared's iCEBreakers). Protocol: keep the placement,
+strip the human's tracks and vias, re-route from scratch, compare
+(`bench/run_bench.py`; board sources and licenses in `bench/boards/SOURCES.md`).
+
+| board | nets routed | wirelength vs human | vias vs human |
+|---|---|---|---|
+| SparkFun RedBoard RP2350 | **108/108** | **0.92×** | **0.78×** |
+| iCEBreaker bitsy | 65/65 | 0.96× | 1.73× |
+| KiCad pic-programmer | 34/34 | 1.03× | 8 vs 6 |
+| RPi Pico VGA reference | 61/61 | 1.25× | 1.17× |
+| RPi RP2040 minimal | 51/51 | 1.25× | 2.36× |
+| iCEBreaker v1.0e | 123/126 | 1.18× | 1.98× |
+| KiCad video demo (589 nets) | 369/371 | 1.09× | 2.52× |
+
+Overall: 811/816 nets (99.4%), each board routed in 0.4–8 s of GPU negotiation
+on an M4 Pro. On the SparkFun board the router beats the human layout on both
+wirelength and via count simultaneously.
+
+Read the ratios honestly: the router used **two** copper layers everywhere; the
+humans had four on five of these boards (a handicap *against* the router — the
+harness quantifies it per board). In the other direction, human copper passes
+real clearance DRC while the router currently approximates clearance with grid
+pitch — closing that gap is active work, as are the remaining 5 nets (a known
+multi-party negotiation standoff pattern) and the via gap on dense 2-layer
+boards (direction-preference calibration).
+
 ## Where it's going
 
 The destination is not "another autorouter." It's an **agent-callable
