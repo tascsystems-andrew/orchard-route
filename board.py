@@ -1,8 +1,13 @@
 """L1: board input — read a real KiCad .kicad_pcb into the shared Board model.
 
-Pure-Python s-expression reader for the KiCad 9/10 text format. No pcbnew, no
-KiCad install, stdlib only: the router has to load boards on a headless Mac
-Studio, and pcbnew's Python bindings drag in the whole GUI stack.
+Pure-Python s-expression reader for the KiCad text format (KiCad 5 through
+10). No pcbnew, no KiCad install, stdlib only: the router has to load boards
+on a headless Mac Studio, and pcbnew's Python bindings drag in the whole GUI
+stack.
+
+KiCad 5 differences handled: footprints are (module ...) not (footprint ...);
+simple net names are written unquoted ((net 72 /SWDIO)); SMD pads may carry a
+numberless (drill (offset ...)) node, which correctly yields drill 0.
 
 Two file-format facts shaped this module:
 
@@ -143,13 +148,19 @@ def _rotate(x, y, deg):
 
 
 def _net_ref(node):
-    """(net "name") | (net N) | (net N "name") -> (code or None, name or None)."""
+    """(net "name") | (net N) | (net N "name") | (net N name) ->
+    (code or None, name or None). KiCad 5 leaves simple net names unquoted
+    ((net 1 GND), (net 72 /SWDIO)), so a plain atom that is not the (first)
+    integer code is a name too; quoting still wins for a net NAMED "12"."""
     code, name = None, None
     for a in node[1:]:
         if isinstance(a, QStr):
             name = str(a)
-        elif isinstance(a, str) and _INT.match(a):
-            code = int(a)
+        elif isinstance(a, str):
+            if code is None and _INT.match(a):
+                code = int(a)
+            else:
+                name = str(a)
     return code, name
 
 
@@ -190,60 +201,95 @@ def _circumcenter(p1, p2, p3):
 
 # ── board extraction ──────────────────────────────────────────────────────────
 
+def _footprints(root):
+    """All footprint nodes: (footprint ...) in KiCad 6+, (module ...) in
+    KiCad 5 and earlier. Same interior structure for everything we read."""
+    yield from _kids(root, "footprint")
+    yield from _kids(root, "module")
+
+
+def _fp_frame(fp):
+    """(x, y, rotation_deg) of a footprint's (at ...) node."""
+    f_at = _floats(_kid(fp, "at") or ["at"])
+    fx = f_at[0] if len(f_at) > 0 else 0.0
+    fy = f_at[1] if len(f_at) > 1 else 0.0
+    frot = f_at[2] if len(f_at) > 2 else 0.0
+    return fx, fy, frot
+
+
 def _edge_bbox(root):
     """Bounding box of Edge.Cuts graphics. Arcs and circles contribute their
-    center +/- radius extremes — a conservative superset, fine for a bbox."""
+    center +/- radius extremes — a conservative superset, fine for a bbox.
+    Collects root gr_* nodes AND fp_* nodes inside footprints (some boards,
+    e.g. SparkFun's, draw the whole outline inside a footprint), composing
+    the footprint (at x y rot) transform for the latter."""
     xs, ys = [], []
 
     def add(x, y):
         xs.append(x)
         ys.append(y)
 
-    def add_node_pt(node):
-        if node is not None:
-            f = _floats(node)
-            if len(f) >= 2:
-                add(f[0], f[1])
-                return (f[0], f[1])
-        return None
+    def scan(parent, prefix, xform):
+        def add_node_pt(node):
+            if node is not None:
+                f = _floats(node)
+                if len(f) >= 2:
+                    p = xform(f[0], f[1])
+                    add(*p)
+                    return p
+            return None
 
-    for g in root:
-        if not (isinstance(g, list) and g):
-            continue
-        tag = g[0]
-        if tag not in ("gr_line", "gr_rect", "gr_arc", "gr_circle", "gr_poly"):
-            continue
-        layer = _kid(g, "layer")
-        if not (layer and len(layer) > 1 and str(layer[1]) == "Edge.Cuts"):
-            continue
-        if tag in ("gr_line", "gr_rect"):
-            add_node_pt(_kid(g, "start"))
-            add_node_pt(_kid(g, "end"))
-        elif tag == "gr_circle":
-            c = _floats(_kid(g, "center") or ["center"])
-            e = _floats(_kid(g, "end") or ["end"])
-            if len(c) >= 2 and len(e) >= 2:
-                r = math.hypot(e[0] - c[0], e[1] - c[1])
-                add(c[0] - r, c[1] - r)
-                add(c[0] + r, c[1] + r)
-        elif tag == "gr_arc":
-            p1 = add_node_pt(_kid(g, "start"))
-            pm = add_node_pt(_kid(g, "mid"))
-            p2 = add_node_pt(_kid(g, "end"))
-            if p1 and pm and p2:
-                cc = _circumcenter(p1, pm, p2)
-                if cc:
-                    r = math.hypot(p1[0] - cc[0], p1[1] - cc[1])
-                    add(cc[0] - r, cc[1] - r)
-                    add(cc[0] + r, cc[1] + r)
-        elif tag == "gr_poly":
-            pts = _kid(g, "pts")
-            for p in pts[1:] if pts else []:
-                if isinstance(p, list) and p and p[0] == "xy":
-                    add_node_pt(p)
-                elif isinstance(p, list) and p and p[0] == "arc":
-                    for sub in ("start", "mid", "end"):
-                        add_node_pt(_kid(p, sub))
+        for g in parent:
+            if not (isinstance(g, list) and g and isinstance(g[0], str)):
+                continue
+            tag = g[0]
+            if not tag.startswith(prefix):
+                continue
+            kind = tag[len(prefix):]
+            if kind not in ("line", "rect", "arc", "circle", "poly"):
+                continue
+            layer = _kid(g, "layer")
+            if not (layer and len(layer) > 1 and str(layer[1]) == "Edge.Cuts"):
+                continue
+            if kind in ("line", "rect"):
+                add_node_pt(_kid(g, "start"))
+                add_node_pt(_kid(g, "end"))
+            elif kind == "circle":
+                c = _floats(_kid(g, "center") or ["center"])
+                e = _floats(_kid(g, "end") or ["end"])
+                if len(c) >= 2 and len(e) >= 2:
+                    r = math.hypot(e[0] - c[0], e[1] - c[1])
+                    cx, cy = xform(c[0], c[1])
+                    add(cx - r, cy - r)
+                    add(cx + r, cy + r)
+            elif kind == "arc":
+                p1 = add_node_pt(_kid(g, "start"))
+                pm = add_node_pt(_kid(g, "mid"))
+                p2 = add_node_pt(_kid(g, "end"))
+                if p1 and pm and p2:
+                    cc = _circumcenter(p1, pm, p2)
+                    if cc:
+                        r = math.hypot(p1[0] - cc[0], p1[1] - cc[1])
+                        add(cc[0] - r, cc[1] - r)
+                        add(cc[0] + r, cc[1] + r)
+            elif kind == "poly":
+                pts = _kid(g, "pts")
+                for p in pts[1:] if pts else []:
+                    if isinstance(p, list) and p and p[0] == "xy":
+                        add_node_pt(p)
+                    elif isinstance(p, list) and p and p[0] == "arc":
+                        for sub in ("start", "mid", "end"):
+                            add_node_pt(_kid(p, sub))
+
+    scan(root, "gr_", lambda x, y: (x, y))
+    for fp in _footprints(root):
+        fx, fy, frot = _fp_frame(fp)
+
+        def to_board(x, y, fx=fx, fy=fy, frot=frot):
+            dx, dy = _rotate(x, y, frot)
+            return fx + dx, fy + dy
+
+        scan(fp, "fp_", to_board)
     if not xs:
         return (0.0, 0.0), (0.0, 0.0)
     return (min(xs), min(ys)), (max(xs) - min(xs), max(ys) - min(ys))
@@ -301,11 +347,8 @@ def load_board(path: str) -> Board:
         return 0, nets[0]
 
     pads = []
-    for fp in _kids(root, "footprint"):
-        f_at = _floats(_kid(fp, "at") or ["at"])
-        fx = f_at[0] if len(f_at) > 0 else 0.0
-        fy = f_at[1] if len(f_at) > 1 else 0.0
-        frot = f_at[2] if len(f_at) > 2 else 0.0
+    for fp in _footprints(root):
+        fx, fy, frot = _fp_frame(fp)
         for pad in _kids(fp, "pad"):
             ptype = pad[2] if len(pad) > 2 and isinstance(pad[2], str) else "smd"
             through = ptype in ("thru_hole", "np_thru_hole")

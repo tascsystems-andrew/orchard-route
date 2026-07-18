@@ -59,14 +59,12 @@ _BOARD_CFG = {
     "rpi-rp2040-minimal": {"pitch_mm": 0.25},       # RP2040 QFN, 0.2 mm pads
     "icebreaker-v1.0e": {"pitch_mm": 0.25},         # iCE40 QFN, 0.25 mm pads
     "icebreaker-bitsy-v1.1c": {"pitch_mm": 0.25},   # fine-pitch, 36x18 mm
-    "sparkfun-iot-redboard-rp2350": {
-        "skip": "board outline parses as 0x0 — outline is fp_line on "
-                "Edge.Cuts inside a footprint and _edge_bbox only scans root "
-                "gr_*; unusable until that parser gap is fixed (SOURCES.md)",
-    },
+    "sparkfun-iot-redboard-rp2350": {"pitch_mm": 0.25},  # RP2350 QFN, 0.2 mm pads
     "rpi-pico-vga": {
-        "skip": "KiCad 5 (module ...) footprint syntax unparsed — board "
-                "loads with 0 pads, no ground truth (SOURCES.md)",
+        # USB micro-B / SD connector pads down to 0.4 mm at 0.65 mm pin
+        # pitch — adjacent pads collide on a 0.5 mm lattice; board is only
+        # 85x56 mm so 0.25 is affordable.
+        "pitch_mm": 0.25,
     },
 }
 
