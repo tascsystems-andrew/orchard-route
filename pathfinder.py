@@ -357,9 +357,17 @@ def paths_to_tracks(lat, net_paths):
 
 # ── board plumbing ────────────────────────────────────────────────────────────
 
-def net_pads_for_board(board, lat):
+def net_pads_for_board(board, lat, node_owner=None):
     """Board pads -> net_pads for build_connections. A through-hole pad snaps
-    on EVERY lattice layer (one set); an SMD pad on its own layer(s) present."""
+    on EVERY lattice layer (one set); an SMD pad on its own layer(s) present.
+
+    A pad's node set is its snap node PLUS every bbox node the ownership
+    arbitration assigned to its net: the whole footprint is the escape set, so
+    a route can leave by any side of the pad, not only past the snap node —
+    fine-pitch pads whose snap node is hemmed in by a neighbor's claim would
+    otherwise be unreachable."""
+    from lattice import pad_rect_nodes
+    node_owner = node_owner or {}
     net_pads = {}
     for pad in board.pads:
         if pad.net_code <= 0:
@@ -371,6 +379,9 @@ def net_pads_for_board(board, lat):
             nd = lat.snap(pad.x_mm, pad.y_mm, ln)
             if nd not in nodes:
                 nodes.append(nd)
+            for n in pad_rect_nodes(lat, pad, ln):
+                if node_owner.get(n) == pad.net_code and n not in nodes:
+                    nodes.append(n)
         if nodes:
             net_pads.setdefault(pad.net_code, []).append(
                 (tuple(nodes), (pad.x_mm, pad.y_mm)))
@@ -389,7 +400,8 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, **kwargs):
     lat, _pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
                                                     layer_names=layer_names)
     t_lat = time.perf_counter() - t0
-    res = route_lattice(lat, net_pads_for_board(brd, lat), node_owner, **kwargs)
+    res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
+                        node_owner, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     return brd, lat, res
 

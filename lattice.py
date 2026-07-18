@@ -110,14 +110,33 @@ def build_lattice(W, H, L, pitch_mm=1.0, origin_mm=(0.0, 0.0), layer_names=None,
                    pitch_mm, tuple(origin_mm), list(layer_names))
 
 
+def pad_rect_nodes(lat, pad, layer_name):
+    """Node ids under a pad's axis-aligned bbox on one layer."""
+    il = lat.layer_names.index(layer_name)
+    ox, oy = lat.origin_mm
+    p = lat.pitch_mm
+    eps = 1e-9
+    ix_lo = max(0, int(np.ceil((pad.x_mm - pad.width_mm / 2 - ox) / p - eps)))
+    ix_hi = min(lat.W - 1, int(np.floor((pad.x_mm + pad.width_mm / 2 - ox) / p + eps)))
+    iy_lo = max(0, int(np.ceil((pad.y_mm - pad.height_mm / 2 - oy) / p - eps)))
+    iy_hi = min(lat.H - 1, int(np.floor((pad.y_mm + pad.height_mm / 2 - oy) / p + eps)))
+    base = il * lat.W * lat.H
+    return [base + iy * lat.W + ix
+            for iy in range(iy_lo, iy_hi + 1)
+            for ix in range(ix_lo, ix_hi + 1)]
+
+
 def lattice_for_board(board, pitch_mm, layer_names=None):
     """Board (board.py dataclass) -> (lattice over bbox+margin, pad_nodes, node_owner).
 
     pad_nodes: net_code -> node ids, each pad snapped to its nearest node on each
     of its copper layers present in the lattice.
     node_owner: node id -> net_code for every node whose (x,y) lies inside a
-    pad's bbox on that node's layer. Ownership is DATA for per-net masking —
-    those nodes keep all their CSR edges.
+    pad's bbox on that node's layer. Where two pads' bboxes overlap a node, the
+    pad whose CENTER is nearest wins — rotated pads' axis-aligned bboxes overlap
+    small neighbors routinely at fine pitch, and last-write-wins entombs the
+    loser (a pad with zero owned nodes cannot escape its own footprint).
+    Ownership is DATA for per-net masking — those nodes keep all their CSR edges.
     """
     if layer_names is None:
         layer_names = ["F.Cu", "B.Cu"]
@@ -133,24 +152,20 @@ def lattice_for_board(board, pitch_mm, layer_names=None):
     layer_index = {name: i for i, name in enumerate(layer_names)}
     pad_nodes = {}
     node_owner = {}
-    eps = 1e-9
+    owner_d2 = {}
     for pad in board.pads:
         for name in pad.layers:
-            il = layer_index.get(name)
-            if il is None:
+            if name not in layer_index:
                 continue
             nd = lat.snap(pad.x_mm, pad.y_mm, name)
             lst = pad_nodes.setdefault(pad.net_code, [])
             if nd not in lst:
                 lst.append(nd)
-            ix_lo = max(0, int(np.ceil((pad.x_mm - pad.width_mm / 2 - ox) / pitch_mm - eps)))
-            ix_hi = min(W - 1, int(np.floor((pad.x_mm + pad.width_mm / 2 - ox) / pitch_mm + eps)))
-            iy_lo = max(0, int(np.ceil((pad.y_mm - pad.height_mm / 2 - oy) / pitch_mm - eps)))
-            iy_hi = min(H - 1, int(np.floor((pad.y_mm + pad.height_mm / 2 - oy) / pitch_mm + eps)))
-            base = il * W * H
-            for iy in range(iy_lo, iy_hi + 1):
-                row = base + iy * W
-                for ix in range(ix_lo, ix_hi + 1):
-                    node_owner[row + ix] = pad.net_code
+            for n in pad_rect_nodes(lat, pad, name):
+                nx, ny = lat.node_xy_mm(n)
+                d2 = (nx - pad.x_mm) ** 2 + (ny - pad.y_mm) ** 2
+                if d2 < owner_d2.get(n, float("inf")):
+                    owner_d2[n] = d2
+                    node_owner[n] = pad.net_code
 
     return lat, pad_nodes, node_owner
