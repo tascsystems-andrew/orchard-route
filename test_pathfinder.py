@@ -3,7 +3,9 @@
 Each case is a 20x20x2 lattice (even layer horizontal, odd vertical) telling
 one congestion story: a clean crossing, a corridor two nets must share, a
 corridor only one net can win, a 4-pad tree, and a standoff whose winners all
-leave (MEANDER — the refine pass's reason to exist). The corridor rows are
+leave (MEANDER — the refine pass's reason to exist). ASYM-YIELD is the one
+exception (20x20x1, directions="both"): a keeper-blindness deadlock that only
+keeper alternation can break. The corridor rows are
 chosen so both nets PREFER the same gap node at iteration 0 (net at row 9 by
 14 cost units, net at row 8 by only 2) — negotiation has to push the
 cheap-to-move net onto the other gap node.
@@ -182,9 +184,57 @@ def test_meander():
     return ok
 
 
+def test_asym_yield():
+    """The keeper-blindness deadlock (Voxy nets 80/82 at via_cost 12,
+    icebreaker-bitsy /FLASH_~{CS}, icebreaker-v1.0e /VCORE): net 2 is walled
+    in so its ONLY route crosses one bridge node; net 1 (lower code, so
+    always the keeper) crosses the same node cheaply but has a
+    moderately-priced dodge. Asymmetric rip-up never re-evaluates the keeper,
+    so net 2 bounces off it every iteration, and the streak>=4 full rip only
+    makes both flee then both return (with both ripped, kept_usage prices
+    nobody). hist_weight is 0 here to mirror the boards: there the loser's
+    alternative was itself priced out, so hist could never brute-force the
+    separation — in this toy a nonzero hist eventually would, hiding the bug.
+    Keeper alternation (patience 3) must hand the bridge to net 2 for one
+    round, making net 1 finally price kept_usage and take its dodge."""
+    ring = [(9, 9), (11, 9), (9, 11), (11, 11), (8, 10), (12, 10)]
+    kw = dict(hist_weight=0.0, present_factor=3.0)
+    lat = build_lattice(W, H, 1, blocked=frozenset(y * W + x for x, y in ring),
+                        directions="both")
+    B = 10 * W + 10                                  # the bridge, (10, 10)
+    net_pads = {
+        1: [_pad(lat, 10, 0), _pad(lat, 10, 19)],    # column 10, through B;
+                                                     # dodge via col 7/13: +6
+        2: [_pad(lat, 9, 10), _pad(lat, 11, 10)],    # penned: B is the only way
+    }
+    # Premise, fix disabled: the bridge pins at overuse exactly 1 to the
+    # max_iters cap and greedy legalization fails net 2 with the exact
+    # contested-with-the-keeper signature seen on all three boards.
+    res_off = route_lattice(lat, net_pads, keeper_patience=10**9, **kw)
+    pinned = (res_off.iterations == 40
+              and all(v == 1 for v in res_off.overuse_curve))
+    sig = (len(res_off.failed) == 1 and res_off.failed[0][0] == 2
+           and "contested with net 1" in res_off.failed[0][1])
+    # Fix, default patience: ownership transfers at iteration 3, net 1 pays
+    # for its own alternative, both nets route well under max_iters.
+    res_on = route_lattice(lat, net_pads, **kw)
+    n1, n2 = _net_nodes(res_on, 1), _net_nodes(res_on, 2)
+    ok = (pinned and sig
+          and not res_on.failed and res_on.overuse_curve[-1] == 0
+          and B in n2 and B not in n1
+          and res_on.iterations <= 8)
+    print(f"ASYM-YIELD : {'PASS' if ok else 'FAIL'}  "
+          f"no-fix iters={res_off.iterations}  "
+          f"curve={res_off.overuse_curve}  failed={res_off.failed}")
+    print(f"             fix iters={res_on.iterations}  "
+          f"curve={res_on.overuse_curve}  net1 dodges B={B not in n1}  "
+          f"net2 holds B={B in n2}  failed={res_on.failed}")
+    return ok
+
+
 if __name__ == "__main__":
     results = [test_cross(), test_corridor(), test_starvation(), test_tree(),
-               test_eqdelta(), test_meander()]
+               test_eqdelta(), test_meander(), test_asym_yield()]
     print(f"RESULT: {'PASS' if all(results) else 'FAIL'} "
           f"({sum(results)}/{len(results)})")
     raise SystemExit(0 if all(results) else 1)

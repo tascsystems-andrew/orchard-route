@@ -154,7 +154,7 @@ def _own_tree_seed(a_nodes, kept_sets):
 def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   hist_weight=0.5, present_factor=1.0, present_growth=1.4,
                   max_iters=40, batch_size=128, max_rounds=100_000,
-                  refine_passes=2, smooth=True):
+                  refine_passes=2, smooth=True, keeper_patience=3):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -168,7 +168,12 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
 
     smooth: emit legality-checked 45-degree geometry (smooth.py) onto
     RouteResult.tracks/.vias; wirelength_mm/via_count then measure the
-    smoothed copper. False leaves them None (raw paths_to_tracks only)."""
+    smoothed copper. False leaves them None (raw paths_to_tracks only).
+
+    keeper_patience: consecutive overused iterations a node may have the
+    SAME keeper net before that keeper yields the node for one round (see
+    the alternation comment in the negotiation loop). A huge value
+    effectively disables alternation."""
     import mlx.core as mx
     import wavefront
 
@@ -205,6 +210,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
 
     hist = np.zeros(N, dtype=np.float32)
     streak = np.zeros(N, dtype=np.int32)  # consecutive iterations overused
+    keeper_hold = {}  # node -> (keeper net, consecutive iterations as keeper)
     present = float(present_factor)
     overuse_curve = []
     iterations = 0
@@ -285,20 +291,50 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         # Rip ASYMMETRICALLY: at each overused node the lowest-code tenant
         # keeps its path, so kept_usage prices the node for everyone else next
         # iteration. Co-ripping all tenants leaves contested nodes costless
-        # and equal-preference nets swap forever (reviewed livelock). Nodes
-        # overused >= 4 iterations running get a full rip instead — by then
-        # hist separates the alternatives, and the keeper itself may be the
-        # net that ought to move.
+        # and equal-preference nets swap forever (reviewed livelock). Two
+        # escalations stack on this, and their order matters:
+        # - Keeper alternation (keeper_patience): a node held by the SAME
+        #   keeper net for keeper_patience consecutive overused iterations
+        #   makes that keeper YIELD for one round — its connections through
+        #   the node rip while every other tenant keeps. Ownership TRANSFERS
+        #   instead of vacating, so the former keeper (whose kept path
+        #   asymmetric rip-up never re-evaluates) finally prices the node via
+        #   kept_usage and pays for its own alternative. Without this, a
+        #   tenant whose only/cheapest route crosses the node bounces off an
+        #   immovable keeper until max_iters even when the keeper's own
+        #   alternative is cheap. The hold counter resets on yield, so a
+        #   keeper that storms straight back yields again a patience later.
+        # - Nodes overused >= 4 iterations running (streak) get a FULL rip —
+        #   by then hist separates the alternatives, and the keeper itself
+        #   may be the net that ought to move. With the default patience of
+        #   3, alternation fires first (iteration 3 of a standoff); if the
+        #   role swap alone doesn't clear the node, streak hits 4 the very
+        #   next iteration and the full rip takes over as the deeper
+        #   fallback. It outranks alternation in the rip test below on
+        #   purpose: it also undoes a swap that helped nobody, restoring the
+        #   symmetric hist-driven escape (see MEANDER in test_pathfinder.py).
         over_nodes = set(np.flatnonzero(over).tolist())
         keeper = {}
         for net in sorted(nodes_by_net):
             for v in nodes_by_net[net] & over_nodes:
                 keeper.setdefault(v, net)
+        prev_hold, keeper_hold, yields = keeper_hold, {}, set()
+        for v, net in keeper.items():  # O(overused nodes), like the rest
+            pnet, run = prev_hold.get(v, (None, 0))
+            run = run + 1 if pnet == net else 1
+            if run >= keeper_patience:
+                yields.add(v)
+                run = 0
+            keeper_hold[v] = (net, run)
         for c in conns:
             if c.path is None:
                 continue
             for v in c.path:
-                if v in over_nodes and (streak[v] >= 4 or keeper[v] != c.net):
+                if v not in over_nodes:
+                    continue
+                # A yield inverts the roles at v: keeper rips, tenants keep.
+                rips = keeper[v] == c.net if v in yields else keeper[v] != c.net
+                if streak[v] >= 4 or rips:
                     c.path = None
                     c.reason = "ripped on overused nodes"
                     break
