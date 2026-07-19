@@ -28,6 +28,105 @@ placement is authoritative): note anything that will make routing lie —
 an input jack beside a power transformer is a layout bug no router fixes.
 Report it; do not silently route around bad placement.
 
+## Phase 0.5 — placement (place a group into one area, respect what's locked)
+
+This is the step before routing when the board is not laid out yet: parts sit
+in an off-board pile at the origin and you decide where they go. `region.py`
+places AND proves — it moves a group inside a fence and routes every candidate,
+so you never place blind. You are still the design engineer: the tool geometry-
+fits and routes the group **you** hand it; it never decides what belongs
+together.
+
+**The division of labour is yours, then the tool's:**
+
+1. **You partition by CIRCUIT FUNCTION.** Read the schematic (Konnect), and
+   split the parts into functional groups — a gain stage, the switching
+   section, a supply leg, the panel I/O — the way you would describe them out
+   loud. Grouping is *your* job: the tool has no min-cut clusterer and never
+   invents groupings (geometric clustering is the analog-layout anti-pattern
+   this project rejects). Assign each group to ONE of the board's areas.
+   `region.py BOARD --list-connections R1,R2,...` prints the net edges among a
+   set of refs as *advisory data* — read it to sanity-check a group, but the
+   partition is a schematic decision, not a geometry one.
+2. **The tool places the group you name, in the area you pick, and routes it.**
+
+**The call, one area at a time:**
+
+```sh
+.venv/bin/python region.py BOARD --area 0 \
+  --components R1,C1,V1,R4,C8 \
+  --constraint "adjacency_max_distance(GstopT1,V1,3)" \
+  --k 5 --out out/area0/
+```
+
+- `--area N` fences on **board outline region N** — one of the physical
+  board-outline areas (`--list-regions` prints them with their pad counts and
+  the nets that span more than one). Use it instead of hand-measuring an
+  `x,y,w,h` rectangle. (`--region x,y,w,h` still exists for a sub-fence inside
+  an area.)
+- `--components` is the **primary input**: the explicit ref list for this
+  area's group. Because free parts start in an off-board pile at the origin,
+  there is no placement to select them by — you name them. (Omitting
+  `--components` falls back to "every unlocked footprint already inside the
+  fence", which only helps a board that is already laid out.)
+- **Off-board pile is handled.** Parts stacked on the origin with no position
+  are scattered across the fence before the search — you do not pre-place them.
+- **Locked parts are auto-respected.** Any footprint LOCKED in KiCad whose
+  position is inside the area is auto-frozen at its exact KiCad coordinates —
+  an obstacle the group must avoid and a fixed anchor its nets pull toward —
+  **without you listing it**. The run reports them on the `auto-fixed` line and
+  `diagnostics.auto_fixed`. This is how you keep panel controls, a socket, a
+  connector where they are while the rest flows around them. (Naming a locked
+  part in `--components` is a hard error: unlock it in KiCad or leave it to the
+  auto-fix.)
+
+**The constraint vocabulary is closed — these six, nothing else** (a typo or an
+invented form fails loudly, naming the valid set; that is deliberate, so the
+tool never guesses at intent):
+
+| constraint | says | write it from the schematic when |
+|---|---|---|
+| `fixed(ref)` | may not move | a part is placed and must stay (added for you on locked parts) |
+| `adjacency_max_distance(a,b,mm)` | centers ≤ mm apart | a grid stopper stays at its tube pin |
+| `min_distance(a,b,mm)` | centers ≥ mm apart | a plate resistor kept off the grid input |
+| `keepout(x,y,w,h)` | no courtyard inside | a mounting hole / HV creepage gap stays clear |
+| `orientation_set(ref,[0,90,...])` | allowed rotations | a polarized part or a connector must face one way |
+| `edge(ref,side)` | courtyard on a fence side | a jack or pot sits on the board edge |
+
+`adjacency_max_distance` and `min_distance` are CENTER-to-center; the preflight
+proves an impossible one BEFORE the search and hands back the exact mm that
+would make it possible, so trust its number over a guess.
+
+**Candidates are PROPOSALS — never auto-applied.** Each `--k` candidate ships a
+routed `cand-N.kicad_pcb` you open in KiCad and an `cand-N.svg` you look at.
+Nothing touches the source board (it is read-only; the writer refuses its
+directory). You inspect, you judge, you decide whether to apply one — by opening
+its board copy, or moving the footprints via Konnect from the candidate's
+`placements`. Ranking is strict: **failures ≫ constraint violations ≫
+wirelength + via cost**, so a placement that does not route can never outrank
+one that does, however short its copper.
+
+**Read `diagnostics` — it is the feedback loop, written for you:**
+
+- `auto_fixed` — the locked refs held in place. Confirm they are the ones you
+  expected; a missing panel control means it was not locked in KiCad.
+- `unplaced_free_parts` — unlocked parts sitting off every board outline that
+  you did *not* name. They belong to no area and were NOT swept in; name them
+  in a group or rough-place them, don't ignore them.
+- `boundary_nets` — nets that leave the area. Each becomes a pseudo-pad on the
+  fence edge the net exits by, so the group routes to where the rest of the
+  board actually is, not into a vacuum. A net you expected to cross that is
+  missing means the two ends are not both present.
+- `binding_constraint` — which constraint was tight and by how much slack;
+  relax that one first for a better layout.
+- `unrouted` / `infeasible_reason` — what did not route and why, or why zero
+  candidates came back. `suggested_expansion` reads the boundary pressure and
+  says which way to grow the fence. Read these and revise the group, the area,
+  or a constraint — retrying the identical call blindly is the failure mode.
+
+An infeasible fence is NOT an error — it comes back as zero candidates plus the
+reason, because your next move is to read it and change something.
+
 ## Phase 1 — route
 
 ```sh

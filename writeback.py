@@ -245,6 +245,30 @@ def load_net_class_clearances(pro_path, nets, clearance_mm=DEFAULT_CLEARANCE_MM)
     return {code: value(cls) for code, cls in resolved.items()}
 
 
+def load_net_class_terminal_served(pro_path, nets):
+    """net_code -> bool: which nets a net class declares TERMINAL-SERVED, from
+    the sibling .kicad_pro. Same resolution as every other class lookup here
+    (shared _resolve_net_classes), so a net's terminal-served flag and its
+    width/clearance can never disagree about which class it is in.
+
+    A class opts in with a truthy boolean field `terminal_served` on its class
+    dict — KiCad ignores unknown net-class keys, so the field round-trips
+    through Board Setup untouched. Nets no such class claims are False, which
+    is the default the whole feature preserves: no net is terminal-served
+    unless a class (or the CLI) says so.
+    """
+    resolved, default_cls = _resolve_net_classes(pro_path, nets)
+
+    def value(cls):
+        for src in (cls, default_cls):
+            v = src.get("terminal_served")
+            if isinstance(v, bool):
+                return v
+        return False
+
+    return {code: value(cls) for code, cls in resolved.items()}
+
+
 def load_net_class_names(pro_path, nets):
     """net_code -> net class NAME for every net in nets, resolved exactly
     like load_net_class_widths (same shared machinery — one vocabulary, no
@@ -369,7 +393,8 @@ def verify_emission(geometry, widths, tracks, vias, defaults):
 def write_routed_copy(board_path, out_path, tracks, vias, nets,
                       track_width_mm=DEFAULT_TRACK_MM,
                       via_size_mm=DEFAULT_VIA_MM,
-                      via_drill_mm=DEFAULT_DRILL_MM, widths=None):
+                      via_drill_mm=DEFAULT_DRILL_MM, widths=None,
+                      terminals=None):
     """Append the router's copper to a copy of board_path, written to out_path.
 
     tracks: (x1_mm, y1_mm, x2_mm, y2_mm, layer_name, net_code) as produced by
@@ -379,6 +404,14 @@ def write_routed_copy(board_path, out_path, tracks, vias, nets,
     build it from load_net_class_widths / apply_width_map; nets absent from
     the dict fall back to the scalars. The source file is read-only;
     out_path must not resolve to the source file or into its directory.
+
+    terminals: optional (x_mm, y_mm, net_code, size_mm, drill_mm) list — the
+    physical wire-landings of terminal-served nets (terminal.py). Each is
+    emitted as a `(via)` carrying its net, with its OWN large drill (a flying
+    lead solders through it) rather than the net's signal-via size. A via
+    spanning the outer copper layers is the representation KiCad loads cleanly
+    and nets exactly like any other via: the pad-to-terminal tracks meet its
+    (x, y) on their shared net, so the netlist joins them.
     """
     dst = _refuse_source_dir(board_path, out_path)
 
@@ -417,6 +450,16 @@ def write_routed_copy(board_path, out_path, tracks, vias, nets,
             "\t(via\n"
             f"\t\t(at {_fmt(x)} {_fmt(y)})\n"
             f"\t\t(size {_fmt(via_mm)})\n"
+            f"\t\t(drill {_fmt(drill_mm)})\n"
+            f"\t\t(layers {_quote(cu_top)} {_quote(cu_bot)})\n"
+            f"\t\t{net_attr(code)}\n"
+            + uuid_line() +
+            "\t)\n")
+    for x, y, code, size_mm, drill_mm in (terminals or []):
+        parts.append(
+            "\t(via\n"
+            f"\t\t(at {_fmt(x)} {_fmt(y)})\n"
+            f"\t\t(size {_fmt(size_mm)})\n"
             f"\t\t(drill {_fmt(drill_mm)})\n"
             f"\t\t(layers {_quote(cu_top)} {_quote(cu_bot)})\n"
             f"\t\t{net_attr(code)}\n"
@@ -539,6 +582,30 @@ class FootprintRecord:
     at_insert: int      # splice offset used only when at_span is None
     at_extras: tuple    # non-numeric atoms trailing the numbers, kept verbatim
     pad_ats: tuple      # per pad: (span_or_None, insert_offset, vals, extras)
+    locked: bool = False   # the footprint is LOCKED in KiCad (_footprint_locked)
+
+
+def _footprint_locked(fp):
+    """True when a (footprint ...) / (module ...) node is LOCKED in KiCad.
+
+    Two spellings, both checked empirically against real files:
+    - KiCad 8/9/10 write a `(locked yes)` node as a DIRECT CHILD of the
+      footprint (Voxy-arduino.kicad_pcb carries 57 of them — e.g. its
+      PEC11R rotary encoders — as the first child after the header). `(locked
+      no)`, or the node's absence, is unlocked.
+    - KiCad 5/6/7 write a bare `locked` ATOM in the footprint/module header
+      itself: `(footprint "lib:fp" locked (layer ...))` / `(module NAME
+      locked (layer ...) ...)`.
+
+    A property's own `(locked yes)`/`(unlocked yes)` — the flag that pins a
+    silkscreen field — is a different node one level deeper (inside a
+    `(property ...)` kid) and never reaches here: only the footprint node's own
+    direct children and header atoms are inspected. Raw tokens are compared, so
+    a quoted library id that happens to read "locked" cannot false-positive."""
+    for k in fp.kids:
+        if k.tag == "locked":
+            return len(k.atoms) > 1 and k.atoms[1][0] == "yes"
+    return any(tok == "locked" for tok, _s, _e in fp.atoms[1:])
 
 
 def _footprint_ref(fp):
@@ -568,7 +635,8 @@ def _footprint_records(root):
                 rot_deg=vals[2] if len(vals) > 2 else 0.0,
                 n_pads=len(pads), at_span=at_span,
                 at_insert=at_insert if at_insert is not None else -1,
-                at_extras=extras, pad_ats=pads))
+                at_extras=extras, pad_ats=pads,
+                locked=_footprint_locked(fp)))
     counts = {}
     for r in records:
         counts[r.ref] = counts.get(r.ref, 0) + 1
@@ -712,6 +780,18 @@ def main(argv=None):
     ap.add_argument("--region-index", type=int, default=None, metavar="N",
                     help="route only board region N of a multi-board panel "
                          "(`pathfinder.py BOARD --list-regions` lists them)")
+    ap.add_argument("--terminal-nets", default="", metavar="NET,NET,...",
+                    help="comma-separated net names to serve by WIRE: drop a "
+                         "solderable via terminal per pad-cluster and route "
+                         "pad->terminal instead of one on-board tree. UNIONed "
+                         "with any net class flagged terminal_served")
+    ap.add_argument("--terminal-cluster-mm", type=float, default=None,
+                    help="cluster radius for terminal-served nets in mm "
+                         "(default 25)")
+    ap.add_argument("--terminal-size", type=float, default=None,
+                    help="terminal via pad diameter in mm (default 2.0)")
+    ap.add_argument("--terminal-drill", type=float, default=None,
+                    help="terminal via drill in mm (default 1.0)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
@@ -725,12 +805,18 @@ def main(argv=None):
     # --width-map / --max-width / --fab go IN, so route_board resolves the
     # copper before it plans halos and clearance rings. What comes back on
     # res.net_widths is what gets written, unchanged: see verify_emission().
+    terminal_nets = [s.strip() for s in args.terminal_nets.split(",")
+                     if s.strip()]
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                 layer_names=layers,
                                 fab=args.fab, fab_enforce=args.fab_enforce,
                                 via_exclusion=not args.no_via_exclusion,
                                 width_map=args.width_map or None,
                                 region_index=args.region_index,
+                                terminal_nets=terminal_nets or None,
+                                terminal_cluster_mm=args.terminal_cluster_mm,
+                                terminal_size_mm=args.terminal_size,
+                                terminal_drill_mm=args.terminal_drill,
                                 max_width_mm=args.max_width)
     # Prefer the router's smoothed geometry (45-degree segments emit as plain
     # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
@@ -803,9 +889,11 @@ def main(argv=None):
                   "written; the contract must never describe copper other "
                   "than what is emitted.")
 
+    terminals = [(t.x_mm, t.y_mm, t.net_code, t.size_mm, t.drill_mm)
+                 for t in (res.terminals or [])]
     write_routed_copy(args.board, args.out, tracks, vias, brd.nets,
                       track_width_mm=emit[0], via_size_mm=emit[1],
-                      via_drill_mm=emit[2], widths=widths)
+                      via_drill_mm=emit[2], widths=widths, terminals=terminals)
     failed_nets = {n for n, _ in res.failed}
     routable = set(res.net_paths) | failed_nets
     print(f"nets        : {len(routable)} routable | "
@@ -827,6 +915,15 @@ def main(argv=None):
     print(f"net classes : {pro or 'none (emitter defaults)'}")
     print(f"tracks      : {len(tracks)} appended ({len(brd.tracks)} already in file)")
     print(f"vias        : {len(vias)} appended ({len(brd.vias)} already in file)")
+    if terminals:
+        ts = res.terminal_stats or {"nets": {}}
+        print(f"terminals   : {len(terminals)} wire-landing via(s) appended "
+              f"for {len(ts['nets'])} net(s) "
+              f"(size {terminals[0][3]:.3g}/drill {terminals[0][4]:.3g} mm)")
+        for code, s in sorted(ts["nets"].items()):
+            print(f"  {s['net']:<8} {s['pads']} pads -> {s['clusters']} "
+                  f"terminal(s) | copper {s['routed_copper_mm']:.1f} mm vs "
+                  f"single-MST {s['single_mst_mm']:.1f} mm")
     if res.failed:
         print(f"failed nets : {len(res.failed)} (copy contains the routed subset)")
     return 0

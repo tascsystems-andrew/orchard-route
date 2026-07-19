@@ -72,6 +72,9 @@ class Part:
     y_mm: float
     rot_deg: float
     pads: tuple            # of board.Pad
+    locked: bool = False   # the footprint is LOCKED in KiCad (writeback.
+                           # FootprintRecord.locked, propagated here so the
+                           # region solver can auto-fix locked parts)
 
 
 @dataclass(frozen=True)
@@ -552,7 +555,8 @@ def parts_from_board(board_path, refs=None):
         o = offsets[rec.uref]
         out[key] = Part(ref=key, x_mm=rec.x_mm, y_mm=rec.y_mm,
                         rot_deg=rec.rot_deg,
-                        pads=tuple(brd.pads[o:o + rec.n_pads]))
+                        pads=tuple(brd.pads[o:o + rec.n_pads]),
+                        locked=rec.locked)
     return out
 
 

@@ -561,11 +561,286 @@ def _hand_wirelength(out):
     return j["wirelength_mm"]
 
 
+# ── multi-area board: locked auto-fix, --area fencing, off-board pile ─────────
+#
+# The design-driver's real board: THREE board-outline areas, some parts LOCKED
+# in KiCad and pre-placed, and the free parts sitting in an off-board pile at
+# ~the origin (default placement — no position information). These fixtures fake
+# exactly that so the four properties that matter are checkable by hand:
+#   - a LOCKED footprint inside an area is auto-fixed: obstacle + fixed anchor,
+#     never moved across candidates, without being listed;
+#   - --area N resolves to the Nth Edge.Cuts outline as the fence;
+#   - free parts that START in a collapsed pile still scatter to legal,
+#     non-overlapping positions inside the fence (the make-or-break: SA/repair
+#     must ignore the pile and place fresh);
+#   - a net with pads in two areas gets a boundary terminal.
+
+MA_NETS = ["", "N_A", "N_CROSS", "GND", "N_PILE"]
+
+
+def _ma_fp(ref, x, y, pads, rot=0, locked=False):
+    """One 1x1 mm SMD footprint for the multi-area fixture. pads: (ox,oy,net).
+    locked=True emits the KiCad 8/9/10 (locked yes) child node."""
+    if locked:
+        head = ['\t(footprint "R_1206"', '\t\t(locked yes)',
+                '\t\t(layer "F.Cu")']
+    else:
+        head = ['\t(footprint "R_1206" (layer "F.Cu")']
+    body = list(head)
+    body.append(f'\t\t(at {x} {y})' if not rot else f'\t\t(at {x} {y} {rot})')
+    body.append(f'\t\t(property "Reference" "{ref}" (at 0 0 0) (layer "F.SilkS"))')
+    for i, (ox, oy, net) in enumerate(pads, start=1):
+        body.append(
+            f'\t\t(pad "{i}" smd rect (at {ox} {oy}) (size 1 1) '
+            f'(layers "F.Cu") (net {MA_NETS.index(net)} "{net}"))')
+    body.append("\t)")
+    return "\n".join(body)
+
+
+def _rect_outline(x0, y0, x1, y1):
+    """Four Edge.Cuts gr_lines forming one closed rectangle = one board area."""
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+    return "\n".join(
+        f'\t(gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) '
+        f'(layer "Edge.Cuts") (width 0.1))'
+        for a, b in zip(corners, corners[1:]))
+
+
+# Three disjoint 50 x 40 mm areas with air between them; pile at (2, 80), off
+# every area. AREA 0 holds two LOCKED parts (L1, L2). PILE holds nine FREE parts
+# assigned to area 0. A1 (in area 1) and A2 (in area 2) are placed furniture that
+# put N_CROSS and GND across the area-0 boundary.
+MA_AREAS = [(10, 10, 60, 50), (80, 10, 130, 50), (150, 10, 200, 50)]
+MA_PILE_XY = (2.0, 80.0)
+MA_PILE = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"]
+_MA_PILE_PADS = {
+    "P1": [(-1.5, 0, "N_A"), (1.5, 0, "N_CROSS")],
+    "P2": [(-1.5, 0, "N_A"), (1.5, 0, "N_PILE")],
+    "P3": [(-1.5, 0, "N_PILE"), (1.5, 0, "GND")],
+    "P4": [(-1.5, 0, "N_CROSS"), (1.5, 0, "N_PILE")],
+    "P5": [(-1.5, 0, "N_A"), (1.5, 0, "GND")],
+    "P6": [(-1.5, 0, "N_PILE"), (1.5, 0, "GND")],
+    "P7": [(-1.5, 0, "N_A"), (1.5, 0, "N_PILE")],
+    "P8": [(-1.5, 0, "N_CROSS"), (1.5, 0, "GND")],
+    "P9": [(-1.5, 0, "N_A"), (1.5, 0, "GND")],
+}
+
+
+def write_multiarea(path):
+    fps = [
+        _ma_fp("L1", 25.0, 25.0, [(-1.5, 0, "N_A"), (1.5, 0, "GND")], locked=True),
+        _ma_fp("L2", 45.0, 38.0, [(-1.5, 0, "N_A"), (1.5, 0, "GND")], locked=True),
+        _ma_fp("A1", 100.0, 30.0, [(-1.5, 0, "N_CROSS"), (1.5, 0, "GND")]),
+        _ma_fp("A2", 170.0, 30.0, [(-1.5, 0, "GND"), (1.5, 0, "N_PILE")]),
+    ]
+    # nine free parts stacked on ONE point — the off-board pile, no positions
+    for j, ref in enumerate(MA_PILE):
+        fps.append(_ma_fp(ref, MA_PILE_XY[0] + 0.001 * j, MA_PILE_XY[1],
+                          _MA_PILE_PADS[ref]))
+    text = (
+        '(kicad_pcb (version 20240108) (generator "test_region")\n'
+        '\t(general (thickness 1.6))\n'
+        '\t(paper "A4")\n'
+        '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal))\n'
+        + "".join(f'\t(net {i} "{n}")\n' for i, n in enumerate(MA_NETS))
+        + "\n".join(_rect_outline(*a) for a in MA_AREAS) + "\n"
+        + "\n".join(fps) + "\n)\n")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return text
+
+
+def _courts_of(board_path, refs):
+    """{ref: courtyard rect} at a board's CURRENT placement, via place.py's own
+    geometry — so overlap/inside checks use the same courtyard the solver did."""
+    from place import parts_from_board, part_courtyard
+    parts = parts_from_board(board_path)
+    return {r: part_courtyard(parts[r]) for r in refs if r in parts}
+
+
+def test_locked_flag():
+    print("=== the locked flag is parsed from the real KiCad token ===")
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    with open(src, encoding="utf-8") as f:
+        recs = {r.uref: r for r in board_footprints(f.read())}
+    check(recs["L1"].locked and recs["L2"].locked,
+          "the two (locked yes) footprints read as locked")
+    check(not any(recs[r].locked for r in MA_PILE + ["A1", "A2"]),
+          "every unlocked footprint reads as unlocked (no false positives)")
+    from place import parts_from_board
+    parts = parts_from_board(src)
+    check(parts["L1"].locked and not parts["P1"].locked,
+          "the flag propagates through place.Part")
+    if os.path.exists(VOXY):
+        with open(VOXY, encoding="utf-8") as f:
+            vlocked = sorted(r.uref for r in board_footprints(f.read())
+                             if r.locked)
+        check(len(vlocked) == 9 and "S1" in vlocked and "DS1" in vlocked,
+              f"Voxy's own locked panel controls are read from (locked yes): "
+              f"{vlocked}")
+
+
+def test_area_fence():
+    print("=== --area N fences on a board outline region ===")
+    from region import area_fence
+    from lattice import board_outline_regions
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    regions = board_outline_regions(load_board(src))
+    check(len(regions) == 3, f"the 3 disjoint outlines read as 3 areas "
+                             f"(got {len(regions)})")
+    f0 = area_fence(src, 0)
+    check(abs(f0[0] - 10) < 1e-6 and abs(f0[2] - 50) < 1e-6,
+          f"area 0 resolves to its bbox (10,10,50,40) — got "
+          f"{tuple(round(v, 1) for v in f0)}")
+    try:
+        area_fence(src, 5)
+        check(False, "out-of-range area rejected")
+    except ValueError as e:
+        check("out of range" in str(e), f"out-of-range area names the count "
+                                        f"({str(e)[:50]}...)")
+    if os.path.exists(VOXY):
+        vf = area_fence(VOXY, 0)
+        check(len(vf) == 4 and vf[2] > 0,
+              f"--area resolves on the real Voxy board too "
+              f"({tuple(round(v, 1) for v in vf)})")
+
+
+def test_auto_fix_locked():
+    print("=== locked parts inside the fence are auto-fixed and never move; "
+          "free parts land in the area; a crossing net gets a terminal ===")
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    before = sha256(src)
+    home = _courts_of(src, ["L1", "L2"])
+    from place import parts_from_board
+    home_xy = {r: (parts_from_board(src)[r].x_mm, parts_from_board(src)[r].y_mm)
+               for r in ("L1", "L2")}
+
+    res = optimize_region(src, MA_PILE, None, area=0, k=3, pitch_mm=0.5,
+                          seed=0, sweeps=80,
+                          out_dir=os.path.join(OUT_DIR, "ma-autofix"))
+    check(sha256(src) == before, "source board bytes untouched")
+    d = res.diagnostics
+    check(set(d["auto_fixed"]) == {"L1", "L2"},
+          f"the two locked in-fence parts were auto-fixed WITHOUT being listed "
+          f"(got {d['auto_fixed']})")
+    check(sorted(d["movable"]) == sorted(MA_PILE),
+          f"only the named free parts are movable (got {d['movable']})")
+    check(bool(res.candidates), f"the off-board pile produced candidates "
+                                f"({len(res.candidates)})")
+    if not res.candidates:
+        return
+    fence = (10.0, 10.0, 50.0, 40.0)
+    from region import _in_rect
+    for cand in res.candidates:
+        recs = parts_from_board(cand.board_copy)
+        for r in ("L1", "L2"):
+            gx, gy = recs[r].x_mm, recs[r].y_mm
+            if abs(gx - home_xy[r][0]) > 1e-6 or abs(gy - home_xy[r][1]) > 1e-6:
+                check(False, f"cand-{cand.id}: locked {r} moved "
+                             f"{home_xy[r]} -> {(gx, gy)}")
+                return
+        for r in MA_PILE:
+            c = _courts_of(cand.board_copy, [r])[r]
+            if not (c[0] >= fence[0] - 1e-6 and c[1] >= fence[1] - 1e-6
+                    and c[2] <= fence[0] + fence[2] + 1e-6
+                    and c[3] <= fence[1] + fence[3] + 1e-6):
+                check(False, f"cand-{cand.id}: free {r} courtyard {c} left "
+                             f"area 0")
+                return
+    check(True, "L1/L2 sit exactly at their KiCad position in every candidate, "
+                "and every free part's courtyard is inside area 0")
+    crossing = {t["net_name"] for t in d["boundary_nets"]}
+    check("N_CROSS" in crossing,
+          f"the net with pads in area 0 AND area 1 got a boundary terminal "
+          f"(crossing nets: {sorted(crossing)})")
+
+
+def test_offboard_pile():
+    print("=== the off-board pile: N parts on ONE point scatter to legal, "
+          "non-overlapping positions inside the fence ===")
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    # every pile part starts within a thousandth of a mm of the same point
+    from place import parts_from_board
+    start = parts_from_board(src)
+    piled = [start[r] for r in MA_PILE]
+    span = max(abs(a.x_mm - b.x_mm) + abs(a.y_mm - b.y_mm)
+               for a in piled for b in piled)
+    check(span < 0.05, f"the fixture really is a collapsed pile "
+                       f"(max pairwise start offset {span:.4f} mm)")
+
+    res = optimize_region(src, MA_PILE, None, area=0, k=3, pitch_mm=0.5,
+                          seed=0, sweeps=80,
+                          out_dir=os.path.join(OUT_DIR, "ma-pile"))
+    check(bool(res.candidates),
+          f"a maximally-infeasible pile start still yields candidates "
+          f"({len(res.candidates)}) — SA/repair ignored the pile and placed fresh")
+    seeded = res.diagnostics.get("seeded") or []
+    scattered = [m for m in seeded if "scatter" in m["constraint"]]
+    check(len(scattered) == len(MA_PILE),
+          f"all {len(MA_PILE)} piled parts were scattered before annealing "
+          f"(got {len(scattered)} scatter moves)")
+    if not res.candidates:
+        return
+    fence = (10.0, 10.0, 50.0, 40.0)
+    ok_all = True
+    for cand in res.candidates:
+        courts = _courts_of(cand.board_copy, MA_PILE)
+        # inside the fence
+        for r, c in courts.items():
+            if not (c[0] >= fence[0] - 1e-6 and c[1] >= fence[1] - 1e-6
+                    and c[2] <= fence[0] + fence[2] + 1e-6
+                    and c[3] <= fence[1] + fence[3] + 1e-6):
+                ok_all = False
+        # pairwise non-overlapping (the courtyard proxy the solver enforces)
+        refs = list(courts)
+        for i in range(len(refs)):
+            for j in range(i + 1, len(refs)):
+                a, b = courts[refs[i]], courts[refs[j]]
+                if (a[0] < b[2] - 1e-6 and b[0] < a[2] - 1e-6
+                        and a[1] < b[3] - 1e-6 and b[1] < a[3] - 1e-6):
+                    ok_all = False
+    check(ok_all, "in every candidate all nine formerly-piled parts are inside "
+                  "area 0 and pairwise non-overlapping")
+    # determinism holds through the scatter
+    res2 = optimize_region(src, MA_PILE, None, area=0, k=3, pitch_mm=0.5,
+                           seed=0, sweeps=80,
+                           out_dir=os.path.join(OUT_DIR, "ma-pile-b"))
+    check([c.placements for c in res.candidates] ==
+          [c.placements for c in res2.candidates],
+          "the scatter is deterministic (identical placements on a re-run)")
+
+
+def test_pile_explicit_required():
+    print("=== a locked part named movable is a hard error; the primary path "
+          "is an explicit ref list ===")
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    try:
+        optimize_region(src, ["P1", "L1"], None, area=0,
+                        out_dir=os.path.join(OUT_DIR, "ma-err"))
+        check(False, "locked part named movable rejected")
+    except ValueError as e:
+        check("locked" in str(e).lower() and "L1" in str(e),
+              f"naming a locked part movable fails loudly ({str(e)[:60]}...)")
+    from region import net_adjacency
+    adj = net_adjacency(src, ["P1", "P4", "A1"])
+    check(adj["P1"] == ["A1", "P4"] or "P4" in adj["P1"],
+          f"net_adjacency exposes connectivity as data (P1 -> {adj['P1']})")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("determinism", test_determinism), ("frozen", test_frozen_parts),
          ("strip", test_strip), ("errors", test_errors),
+         ("locked_flag", test_locked_flag), ("area_fence", test_area_fence),
+         ("auto_fix", test_auto_fix_locked), ("pile", test_offboard_pile),
+         ("pile_explicit", test_pile_explicit_required),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("acceptance", test_acceptance)]
 

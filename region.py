@@ -502,21 +502,104 @@ def _translate(part, nx, ny):
     return replace(part, x_mm=nx, y_mm=ny, pads=pads)
 
 
+def _scatter_pile(order, pinned, live, courts, region, grid_mm, obstacles):
+    """Lay every non-pinned part whose courtyard is ENTIRELY OFF the fence onto
+    a deterministic, non-overlapping grid inside it. Mutates live/courts;
+    returns [move dict].
+
+    THE off-board-pile start (the design-driver's real case): free parts are
+    default-placed in a pile at ~the board origin, carrying NO positional
+    information — dozens of courtyards stacked on one point, far from the area.
+    Their snapped home positions are a maximally infeasible SA start, and
+    place.py's repair walk (random single-part relocation, accepted only when
+    it lowers the O(N^2) overlap count) cannot reliably dig out of it.
+
+    So the parts with no meaningful position are placed FRESH: a regular grid
+    sized to the largest courtyard among them (plus one grid step of gap),
+    spread across the fence, each cell snapped to the placement grid. Cells do
+    not overlap and each part's courtyard fits its cell, so the scatter is
+    non-overlapping at the start; obstacles and already-placed (in-fence /
+    pinned) parts are stepped over. Deterministic — no RNG — so identical calls
+    still return identical candidates.
+
+    The trigger is "courtyard does not touch the fence", NOT merely "center
+    outside": a part whose courtyard OVERLAPS the fence has a real position
+    that says where it belongs (an already-placed board, or a part straddling
+    the fence edge), and moving it would throw away that information and break
+    the tight adjacencies the caller placed it for. Only genuinely off-board
+    parts are scattered; a real hand layout is left untouched.
+    """
+    rx, ry, rw, rh = region
+    fence_rect = (rx, ry, rx + rw, ry + rh)
+    scatter = [r for r in order if r not in pinned
+               and not _rects_overlap(courts[r], fence_rect)]
+    if not scatter:
+        return []
+    cw = max(courts[r][2] - courts[r][0] for r in scatter)
+    ch = max(courts[r][3] - courts[r][1] for r in scatter)
+    step_x = max(grid_mm, math.ceil((cw + grid_mm) / grid_mm) * grid_mm)
+    step_y = max(grid_mm, math.ceil((ch + grid_mm) / grid_mm) * grid_mm)
+    slots = []
+    y = ry + step_y / 2.0
+    while y + ch / 2.0 <= ry + rh + 1e-9 and len(slots) < 6 * len(scatter) + 1:
+        x = rx + step_x / 2.0
+        while x + cw / 2.0 <= rx + rw + 1e-9:
+            slots.append((rx + round((x - rx) / grid_mm) * grid_mm,
+                          ry + round((y - ry) / grid_mm) * grid_mm))
+            x += step_x
+        y += step_y
+    scatter_set = set(scatter)
+    used, moves = set(), []
+    for r in scatter:
+        for si, (sx, sy) in enumerate(slots):
+            if si in used:
+                continue
+            cand = _translate(live[r], sx, sy)
+            rect = part_courtyard(cand)
+            if rect[0] < rx - 1e-9 or rect[1] < ry - 1e-9 \
+                    or rect[2] > rx + rw + 1e-9 or rect[3] > ry + rh + 1e-9:
+                continue
+            if any(_rects_overlap(rect, ob) for ob in obstacles):
+                continue
+            # step over fixed furniture and parts already placed inside the
+            # fence; other scatter parts get their own distinct slots
+            if any(other not in scatter_set and _rects_overlap(rect, courts[other])
+                   for other in courts if other != r):
+                continue
+            frm = [round(live[r].x_mm, 3), round(live[r].y_mm, 3)]
+            live[r], courts[r], used = cand, rect, used | {si}
+            moves.append({"ref": r, "constraint": "off-board pile -> fence scatter",
+                          "from": frm, "to": [round(sx, 3), round(sy, 3)],
+                          "distance_mm": round(math.hypot(sx - frm[0],
+                                                          sy - frm[1]), 3),
+                          "displaces_movable": 0})
+            break
+        # no free slot found: leave at home; repair walk / anneal will try, and
+        # an unfittable pile is caught by preflight's area check upstream.
+    return moves
+
+
 def seed_placement(parts, region, specs, obstacles, grid_mm):
-    """Move parts to satisfy adjacency constraints BEFORE the anneal starts.
+    """Move parts into a tractable starting arrangement BEFORE the anneal.
 
-    place.py's repair walk fixes an infeasible start by random single-part
-    relocations, which is fine for "this courtyard overlaps that one" and
-    hopeless for "this part must be within 4 mm of that one": the target is a
-    handful of grid sites out of thousands, and the walk only accepts moves
-    that reduce the problem COUNT, so it never sees a gradient toward them.
+    Two jobs, in order:
 
-    That matters because the tight adjacency IS the use case — "the grid
-    stopper stays at its pin" is the constraint an amp designer actually
-    writes. So the obvious engineering move is made explicitly here: put the
-    part next to its partner first, then let the annealer explore from there.
-    Translation only, nearest grid site first, and every move is reported in
-    diagnostics.seeded so nothing happens silently.
+    1. SCATTER the off-board pile (_scatter_pile). Parts default-placed at the
+       board origin carry no position, so they are laid on a fresh grid inside
+       the fence — this is the design-driver's real start, parts arriving from
+       a pile rather than a rough layout.
+    2. SEED tight adjacencies. place.py's repair walk fixes an infeasible start
+       by random single-part relocations, which is fine for "this courtyard
+       overlaps that one" and hopeless for "this part must be within 4 mm of
+       that one": the target is a handful of grid sites out of thousands, and
+       the walk only accepts moves that reduce the problem COUNT, so it never
+       sees a gradient toward them. "The grid stopper stays at its pin" is the
+       constraint an amp designer actually writes, so the part is put next to
+       its partner here, then the annealer explores from there.
+
+    Translation only, nearest grid site first, and every move (scatter and
+    adjacency alike) is reported in diagnostics.seeded so nothing happens
+    silently.
     """
     by_ref = {p.ref: p for p in parts}
     order = [p.ref for p in parts]
@@ -525,7 +608,8 @@ def seed_placement(parts, region, specs, obstacles, grid_mm):
     live = {p.ref: _translate(p, p.x_mm, p.y_mm) for p in parts}
     courts = {r: part_courtyard(p) for r, p in live.items()}
     obstacles = list(obstacles)
-    moves = []
+    moves = _scatter_pile(order, pinned, live, courts, region, grid_mm,
+                          obstacles)
 
     def fits(ref, cx, cy):
         """(part, n_movable_overlaps) or None.
@@ -629,35 +713,145 @@ class RegionResult:
                 "diagnostics": self.diagnostics}
 
 
+# ── area fencing and the movable/auto-fixed split ────────────────────────────
+
+def area_fence(board_path, area_index):
+    """Fence rect (x, y, w, h) for outline region `area_index` of the board.
+
+    --area N fences on the Nth disjoint Edge.Cuts outline (board.outline_regions
+    via lattice.board_outline_regions), so a multi-area / multi-board file is
+    driven area by area without the caller measuring rectangles by hand. The
+    fence is the region's BOUNDING BOX; a part whose courtyard would poke past a
+    non-rectangular outline is caught by the anneal's fence check exactly as
+    with a hand-typed region. Raises ValueError for an out-of-range index,
+    naming how many regions exist."""
+    from lattice import board_outline_regions
+    regions = board_outline_regions(load_board(board_path))
+    if not (0 <= area_index < len(regions)):
+        raise ValueError(
+            f"area {area_index} out of range: this board has {len(regions)} "
+            f"outline region(s) (0..{len(regions) - 1}); run --list-regions")
+    r = regions[area_index]
+    return (r.origin_mm[0], r.origin_mm[1], r.size_mm[0], r.size_mm[1])
+
+
+def net_adjacency(board_path, refs):
+    """{ref: [connected refs]} — which of `refs` share a net with which, as
+    DATA the design-driver may consult when partitioning by circuit function.
+
+    This is deliberately NOT clustering: the tool never decides groupings
+    (geometric/connectivity clustering is the analog-layout anti-pattern the
+    architecture rejects — the design thread partitions from the SCHEMATIC).
+    It only reports the net edges between the named parts, so a human/agent
+    reasoning about a group can see which of its members actually connect."""
+    from writeback import board_footprints
+    brd = load_board(board_path)
+    ref_of_pad = _pad_owner_refs(board_path, brd)
+    want = set(refs)
+    nets = {}
+    for i, pad in enumerate(brd.pads):
+        r = ref_of_pad[i]
+        if r in want and pad.net_code > 0:
+            nets.setdefault(pad.net_code, set()).add(r)
+    adj = {r: set() for r in refs}
+    for members in nets.values():
+        for a in members:
+            adj[a] |= (members - {a})
+    return {r: sorted(adj[r]) for r in refs}
+
+
+def _resolve_placement_set(all_parts, region, components, auto_fix_locked,
+                           regions=None):
+    """(movable, auto_fixed, extra_fixed, unplaced) for a fenced area.
+
+    Turns the caller's intent into the two lists optimize_region runs on:
+
+    - movable: the parts allowed to move. The PRIMARY path is an EXPLICIT ref
+      list per area (components), because the design-driver's free parts start
+      in an off-board pile and carry no position to select on. When components
+      is None, movable falls back to the CONVENIENCE default — every UNLOCKED
+      footprint whose center already sits inside the fence (an already-placed
+      board being re-optimized in place).
+    - auto_fixed: every LOCKED footprint whose center is inside the fence.
+      Locked parts never move; they are auto-fixed (added to the model with a
+      fixed() constraint) so they are obstacles and fixed HPWL anchors WITHOUT
+      the caller listing them. extra_fixed is the fixed(ref) strings to add.
+    - unplaced: unlocked parts the caller did NOT name that sit outside every
+      outline region (a default-placed pile). They belong to no area and are
+      NOT silently swept into any movable set — named here so the caller
+      assigns them to an area explicitly.
+
+    A locked part named in an explicit components list is a hard error: locked
+    parts cannot move (unlock it in KiCad, or drop it — it is auto-fixed anyway
+    if it is inside the fence)."""
+    locked_in = sorted(r for r, p in all_parts.items()
+                       if p.locked and _in_rect(p.x_mm, p.y_mm, region))
+    auto_fixed = list(locked_in) if auto_fix_locked else []
+    if components is None:
+        movable = sorted(r for r, p in all_parts.items()
+                         if not p.locked and _in_rect(p.x_mm, p.y_mm, region))
+    else:
+        movable = list(dict.fromkeys(components))
+        bad = [r for r in movable if r in all_parts and all_parts[r].locked]
+        if bad:
+            raise ValueError(
+                f"locked footprint(s) {', '.join(bad)} named as movable — "
+                f"locked parts cannot move. Unlock them in KiCad, or drop them "
+                f"from the component list (a locked part inside the fence is "
+                f"auto-fixed anyway).")
+    extra_fixed = [f"fixed({r})" for r in auto_fixed if r not in movable]
+    unplaced = []
+    if components is None and regions:
+        for r, p in sorted(all_parts.items()):
+            if p.locked or r in movable:
+                continue
+            if all(not reg.contains(p.x_mm, p.y_mm) for reg in regions):
+                unplaced.append(r)
+    return movable, auto_fixed, extra_fixed, unplaced
+
+
 # ── the call ─────────────────────────────────────────────────────────────────
 
-def optimize_region(board_path, components, region, constraints=(), k=5,
-                    pitch_mm=0.5, layers=None, out_dir="out/region",
+def optimize_region(board_path, components=None, region=None, constraints=(),
+                    k=5, pitch_mm=0.5, layers=None, out_dir="out/region",
                     seed=0, sweeps=200, grid_mm=0.5,
                     via_weight_mm=VIA_WEIGHT_MM, clearance_mm=None,
                     class_weights=None, keep_work=False, progress=None,
-                    route_kwargs=None):
+                    route_kwargs=None, area=None, auto_fix_locked=True):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
-    components   : reference designators allowed to move (ref#N for duplicates)
-    region       : (x, y, w, h) mm in board coordinates — the fence
+    components   : reference designators allowed to move (ref#N for duplicates).
+                   THE PRIMARY path — the design thread partitions the schematic
+                   by circuit function and hands one group's refs per area,
+                   because free parts start in an off-board pile and carry no
+                   position to select on. None falls back to the convenience
+                   default: every UNLOCKED footprint already inside the fence.
+    region       : (x, y, w, h) mm in board coordinates — the fence. Omit and
+                   pass `area=N` to fence on board outline region N instead.
+    area         : fence on board.outline_regions[N] rather than a hand-typed
+                   region (area_fence). Exactly one of region / area is given.
+    auto_fix_locked : LOCKED footprints inside the fence are auto-treated as
+                   fixed() — frozen at their KiCad position as obstacles and HPWL
+                   anchors — without the caller listing them (reported in
+                   diagnostics.auto_fixed). False disables it (A/B only).
     constraints  : the closed constraints.py vocabulary (strings or dicts)
     k            : candidates to ship; k*3 finalists are routed
     out_dir      : everything this call writes lands here
 
     Returns RegionResult. Raises ValueError for caller mistakes (unknown ref,
-    bad fence); an infeasible fence is NOT an exception — it comes back as
-    zero candidates and diagnostics.infeasible_reason, because the caller's
-    next move is to read the diagnostics and move the fence.
+    bad fence, a locked part named movable); an infeasible fence is NOT an
+    exception — it comes back as zero candidates and diagnostics.infeasible_reason,
+    because the caller's next move is to read the diagnostics and move the fence.
     """
     t_start = time.perf_counter()
     say = progress or (lambda *_a, **_kw: None)
-    region = _rect_of(region)
+    if (region is None) == (area is None):
+        raise ValueError("pass exactly one of region=(x,y,w,h) or area=N "
+                         "(area fences on a board outline region)")
+    region = _rect_of(area_fence(board_path, int(area)) if area is not None
+                      else region)
     layers = list(layers or ["F.Cu", "B.Cu"])
-    components = list(dict.fromkeys(components))
-    if not components:
-        raise ValueError("components is empty — nothing may move")
     k = int(k)
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
@@ -674,6 +868,26 @@ def optimize_region(board_path, components, region, constraints=(), k=5,
     brd = load_board(board_path)
     ref_of_pad = _pad_owner_refs(board_path, brd)
     all_parts = parts_from_board(board_path)
+
+    # movable / auto-fixed split. Explicit refs are the primary path; locked
+    # parts inside the fence are auto-fixed; a default-placed pile off every
+    # board is named, never silently swept in.
+    from lattice import board_outline_regions
+    outline_regions = board_outline_regions(brd)
+    movable_refs, auto_fixed, extra_fixed, unplaced = _resolve_placement_set(
+        all_parts, region, None if components is None else list(components),
+        auto_fix_locked, regions=outline_regions)
+    movable_source = "explicit list" if components is not None else \
+        "auto: unlocked footprints inside the fence"
+    # the model runs on movable + auto-fixed (locked) parts; auto-fixed parts
+    # are pinned by their fixed() constraint but are real terminals/obstacles.
+    components = list(movable_refs) + [r for r in auto_fixed
+                                       if r not in movable_refs]
+    if not components:
+        raise ValueError(
+            "nothing to place: no movable parts. Name the group's refs with "
+            "components=[...] (the primary path — free parts start off-board), "
+            f"or place parts inside the fence first. Fence {tuple(round(v,2) for v in region)}.")
     unknown = [r for r in components if r not in all_parts]
     if unknown:
         raise ValueError(
@@ -683,8 +897,10 @@ def optimize_region(board_path, components, region, constraints=(), k=5,
     movable = set(components)
     parts = [all_parts[r] for r in components]
 
-    # constraints are parsed here too so a typo fails before any search
-    specs = parse_constraints(list(constraints), known_refs=movable)
+    # constraints are parsed here too so a typo fails before any search; the
+    # auto-fix fixed(ref) constraints are appended (deduped) to the caller's.
+    specs = parse_constraints(list(constraints) + extra_fixed,
+                              known_refs=movable)
 
     # 2 ── frozen furniture that intrudes into the fence
     obstacles, obstacle_refs = [], []
@@ -712,8 +928,17 @@ def optimize_region(board_path, components, region, constraints=(), k=5,
     net_weights = net_weights_from_project(board_path, sorted(net_names),
                                            class_weights=class_weights)
 
-    say(f"fence {region[2]:.1f} x {region[3]:.1f} mm | {len(parts)} movable | "
-        f"{len(obstacles)} frozen obstacles | {len(terminals)} boundary nets")
+    say(f"fence {region[2]:.1f} x {region[3]:.1f} mm"
+        + (f" (area {area})" if area is not None else "")
+        + f" | {len(movable_refs)} movable | {len(auto_fixed)} auto-fixed locked"
+        + (f" ({', '.join(auto_fixed)})" if auto_fixed else "")
+        + f" | {len(obstacles)} frozen obstacles | {len(terminals)} boundary nets")
+    if unplaced:
+        say(f"note    {len(unplaced)} unlocked part(s) sit off every board "
+            f"outline (a default-placed pile) and were NOT auto-added: "
+            f"{', '.join(unplaced[:12])}"
+            + (" ..." if len(unplaced) > 12 else "")
+            + " — name them in components to place them in an area")
 
     # 4 ── placement search. Preflight first (proving it impossible costs
     # milliseconds, discovering it by search costs the user's attention),
@@ -730,10 +955,21 @@ def optimize_region(board_path, components, region, constraints=(), k=5,
         fixed_points=fixed_points, net_weights=net_weights)
     diagnostics = {
         "region": list(region),
+        "area": int(area) if area is not None else None,
         "pitch_mm": pitch_mm,
         "layers": list(layers),
         "seed": seed,
-        "movable": list(components),
+        "movable": list(movable_refs),
+        "movable_source": movable_source,
+        "auto_fixed": list(auto_fixed),
+        "auto_fixed_note": (
+            "locked footprints inside the fence, frozen at their KiCad "
+            "position as obstacles + fixed HPWL anchors (never moved)"),
+        "unplaced_free_parts": list(unplaced),
+        "unplaced_note": (
+            "unlocked parts sitting off every board outline (a default-placed "
+            "pile) — assigned to NO area, not auto-added; name them in "
+            "components to place them, or roughly place them in KiCad first"),
         "frozen_obstacles": obstacle_refs,
         "seeded": seeded,
         "boundary_nets": [asdict(t) for t in terminals],
@@ -1111,9 +1347,19 @@ def _print_summary(result, out_dir):
     d = result.diagnostics
     print(f"region      : {d['region'][0]:.2f},{d['region'][1]:.2f} "
           f"{d['region'][2]:.2f}x{d['region'][3]:.2f} mm  "
-          f"pitch {d['pitch_mm']} mm  layers {','.join(d['layers'])}  "
+          + (f"area {d['area']}  " if d.get('area') is not None else "")
+          + f"pitch {d['pitch_mm']} mm  layers {','.join(d['layers'])}  "
           f"seed {d['seed']}")
-    print(f"movable     : {len(d['movable'])} — {', '.join(d['movable'])}")
+    print(f"movable     : {len(d['movable'])} ({d.get('movable_source', '')})"
+          + (f" — {', '.join(d['movable'])}" if d['movable'] else ""))
+    if d.get('auto_fixed'):
+        print(f"auto-fixed  : {len(d['auto_fixed'])} locked part(s) held at "
+              f"their KiCad position — {', '.join(d['auto_fixed'])}")
+    if d.get('unplaced_free_parts'):
+        up = d['unplaced_free_parts']
+        print(f"unplaced    : {len(up)} unlocked part(s) off every board "
+              f"outline, NOT auto-added — {', '.join(up[:12])}"
+              + (" ..." if len(up) > 12 else ""))
     print(f"frozen      : {len(d['frozen_obstacles'])} intruding courtyard(s)"
           + (f" — {', '.join(d['frozen_obstacles'])}"
              if d['frozen_obstacles'] else ""))
@@ -1188,18 +1434,56 @@ def _print_summary(result, out_dir):
     print(f"  out             : {out_dir}")
 
 
+def _list_regions(board_path):
+    """Print the board's outline regions (the --area indices) and each net that
+    spans more than one, then return 0 — the same map pathfinder --list-regions
+    prints, so the design thread picks an --area N from one place."""
+    from lattice import board_outline_regions
+    from pathfinder import cross_region_nets, pad_region_index
+    brd = load_board(board_path)
+    regions = board_outline_regions(brd)
+    print(f"board       : {os.path.basename(board_path)}")
+    print(f"areas       : {len(regions)} disjoint Edge.Cuts outline(s) "
+          f"(use --area N)")
+    for i, r in enumerate(regions):
+        n = sum(1 for p in brd.pads if pad_region_index([r], p) is not None)
+        print(f"  area {i}: origin ({r.origin_mm[0]:.2f}, {r.origin_mm[1]:.2f}) "
+              f"size {r.size_mm[0]:.2f} x {r.size_mm[1]:.2f} mm | "
+              f"{r.shapes} outline graphic(s) | {n} pads")
+    spanning = cross_region_nets(brd, regions)
+    print(f"spanning    : {len(spanning)} net(s) with pads on more than one area")
+    for code, idx in sorted(spanning.items(),
+                            key=lambda kv: str(brd.nets.get(kv[0]))):
+        print(f"  {brd.nets.get(code, code)}: areas {idx}")
+    return 0
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
-        description="Place and route one fenced region of a KiCad board")
+        description="Place and route one fenced region/area of a KiCad board")
     ap.add_argument("board")
-    ap.add_argument("--components", required=True,
+    ap.add_argument("--components", default=None,
                     help="comma-separated refs allowed to move (ref#N for "
-                         "duplicated designators)")
-    ap.add_argument("--region", required=True, metavar="x,y,w,h",
+                         "duplicated designators). THE primary path — name one "
+                         "circuit-function group per area. Omit with --area to "
+                         "default to every unlocked footprint already inside it")
+    ap.add_argument("--region", default=None, metavar="x,y,w,h",
                     help="the fence, mm, board coordinates")
+    ap.add_argument("--area", type=int, default=None, metavar="N",
+                    help="fence on board outline region N instead of --region "
+                         "(see --list-regions)")
+    ap.add_argument("--list-regions", action="store_true",
+                    help="print the board's outline areas (the --area indices) "
+                         "and the nets that span them, then exit")
+    ap.add_argument("--list-connections", default=None, metavar="R1,R2,...",
+                    help="print the net edges among these refs (advisory DATA "
+                         "for partitioning — the tool never groups), then exit")
     ap.add_argument("--constraint", action="append", default=[],
                     help="repeatable, e.g. \"min_distance(R4,C8,5)\"")
+    ap.add_argument("--no-auto-fix-locked", action="store_true",
+                    help="do NOT auto-freeze locked footprints inside the fence "
+                         "(default is to hold them fixed; A/B measurement only)")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--out", default=None, help="output directory")
     ap.add_argument("--pitch", type=float, default=0.5)
@@ -1214,23 +1498,44 @@ def main(argv=None):
                     help="emit the machine-readable result on stdout")
     args = ap.parse_args(argv)
 
-    try:
-        region = tuple(float(v) for v in args.region.split(","))
-        if len(region) != 4:
-            raise ValueError
-    except ValueError:
-        ap.error(f"--region must be x,y,w,h in mm (got {args.region!r})")
-    components = [c.strip() for c in args.components.split(",") if c.strip()]
+    if args.list_regions:
+        return _list_regions(args.board)
+    if args.list_connections:
+        refs = [c.strip() for c in args.list_connections.split(",") if c.strip()]
+        adj = net_adjacency(args.board, refs)
+        print(f"connections : net edges among {len(refs)} ref(s) "
+              f"(advisory data — the tool does not group)")
+        for r in refs:
+            print(f"  {r:<10} -> {', '.join(adj.get(r, [])) or '(none)'}")
+        return 0
+
+    if (args.region is None) == (args.area is None):
+        ap.error("pass exactly one of --region x,y,w,h or --area N")
+    region = None
+    if args.region is not None:
+        try:
+            region = tuple(float(v) for v in args.region.split(","))
+            if len(region) != 4:
+                raise ValueError
+        except ValueError:
+            ap.error(f"--region must be x,y,w,h in mm (got {args.region!r})")
+    components = None if args.components is None else \
+        [c.strip() for c in args.components.split(",") if c.strip()]
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
     slug = os.path.splitext(os.path.basename(args.board))[0].lower()
-    out_dir = args.out or os.path.join("out", f"region-{slug}")
+    suffix = f"area{args.area}" if args.area is not None else slug
+    out_dir = args.out or os.path.join("out", f"region-{suffix}")
 
-    result = optimize_region(
-        args.board, components, region, constraints=args.constraint,
-        k=args.k, pitch_mm=args.pitch, layers=layers, out_dir=out_dir,
-        seed=args.seed, sweeps=args.sweeps, via_weight_mm=args.via_weight,
-        keep_work=args.keep_work,
-        progress=None if args.json else (lambda m: print(m, flush=True)))
+    try:
+        result = optimize_region(
+            args.board, components, region, constraints=args.constraint,
+            k=args.k, pitch_mm=args.pitch, layers=layers, out_dir=out_dir,
+            seed=args.seed, sweeps=args.sweeps, via_weight_mm=args.via_weight,
+            keep_work=args.keep_work, area=args.area,
+            auto_fix_locked=not args.no_auto_fix_locked,
+            progress=None if args.json else (lambda m: print(m, flush=True)))
+    except ValueError as e:
+        ap.error(str(e))
 
     if args.json:
         print(json.dumps(result.as_dict(), indent=2, default=str))
