@@ -6,7 +6,18 @@ same-layer run of every routed path as a polyline in which alternating H/V
 staircases become true 45-degree segments — but ONLY where the diagonal
 provably clips no foreign copper.
 
-Legality model (matches the router's clearance-by-pitch model): a unit 45
+Legality has TWO gates, and both must pass.
+
+Gate 1 — pitch (geometry.CopperGeometry.diagonals_ok, passed in as
+`allow_diagonals`): a 45-degree segment passes a diagonally-adjacent node at
+pitch/sqrt(2). Foreign copper centred there leaves an edge gap of
+pitch/sqrt(2) - track_width, so diagonals clear only when
+pitch >= sqrt(2) * (track_width + clearance). At the common 0.5 mm pitch with
+a 0.25 mm track and 0.2 mm clearance the requirement is 0.636 mm and the
+actual gap is 0.354 - 0.25 = 0.104 mm: every chamfer is a DRC violation, so
+the caller switches diagonals off wholesale and the raw 90s are emitted.
+
+Gate 2 — occupancy (below): a unit 45
 hop from grid (x, y) to (x+sx, y+sy) cuts the shared corner of four grid
 cells, clipping the two off-line cells whose nodes are (x+sx, y) and
 (x, y+sy). The hop is legal iff BOTH of those nodes are free or owned by the
@@ -161,7 +172,8 @@ def _smooth_run(lat, pts, il, net, occupied, protected, pad_nodes):
     return _merge_collinear(out)
 
 
-def smooth_net_paths(lat, net_paths, occupied, pad_nodes=None):
+def smooth_net_paths(lat, net_paths, occupied, pad_nodes=None,
+                     allow_diagonals=True):
     """RouteResult.net_paths -> net -> [(layer_name, [(x_mm, y_mm), ...])].
 
     occupied: node -> net_code covering EVERY node of every routed net's
@@ -173,7 +185,15 @@ def smooth_net_paths(lat, net_paths, occupied, pad_nodes=None):
     splits are preserved exactly (runs end at layer changes; no cross-layer
     polyline exists); run endpoints are unchanged; polyline vertices always
     lie on lattice nodes, so smoothed and raw geometry share their
-    endpoints bit-for-bit."""
+    endpoints bit-for-bit.
+
+    allow_diagonals=False refuses every 45-degree cut and emits the raw
+    90-degree staircases (collinear runs still merged). The caller passes
+    False when geometry.CopperGeometry says the pitch is too fine for a
+    diagonal to clear a diagonally-adjacent node — see the module docstring's
+    clearance note and geometry.diagonal_pitch_mm. The node-occupancy test
+    below decides WHETHER foreign copper sits beside the cut; the pitch gate
+    decides whether a cut can clear that copper AT ALL. Both must pass."""
     ox, oy = lat.origin_mm
     p = lat.pitch_mm
     pad_nodes = pad_nodes if pad_nodes is not None else frozenset()
@@ -188,7 +208,8 @@ def smooth_net_paths(lat, net_paths, occupied, pad_nodes=None):
                 if len(pts) < 2:
                     continue
                 sm = _smooth_run(lat, pts, il, net, occupied, protected,
-                                 pad_nodes)
+                                 pad_nodes) if allow_diagonals \
+                    else _merge_collinear(pts)
                 polys.append((lat.layer_names[il],
                               [(ox + x * p, oy + y * p) for x, y in sm]))
         out[net] = polys

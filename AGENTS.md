@@ -35,10 +35,15 @@ Report it; do not silently route around bad placement.
 .venv/bin/python writeback.py  BOARD.kicad_pcb out/routed.kicad_pcb --pitch 0.5 --layers F.Cu,B.Cu
 ```
 
-- **Pitch rule:** pitch must be ≤ half the finest pad pitch on the board, and
-  the pitch is also the de-facto clearance today. 0.5 mm suits 1206/0603-class
-  SMD boards; 0.25 mm for finer parts (4× the nodes, slower). If you see many
-  `pad-snap conflicts`, the pitch is too coarse — halve it.
+- **Pitch rule:** pitch must be ≤ half the finest pad pitch on the board.
+  0.5 mm suits 1206/0603-class SMD boards; 0.25 mm for finer parts (4× the
+  nodes, slower). If you see many `pad-snap conflicts`, the pitch is too
+  coarse — halve it. Halving is **not** free: the pitch also has to carry the
+  board's copper, and the `geometry` line (Phase 2) states what this board's
+  copper actually requires. Read it before you touch pitch.
+- `--no-via-exclusion` turns off the via clearance neighbourhood. It buys
+  routability with illegal copper — only for A/B measurement, never for a
+  board you intend to fabricate.
 - **Layers:** name the copper layers to route. Inner layers of a 4-layer board
   are usually planes — do not route signals there without being asked.
 - `--no-refine` disables the post-legal shortening pass (only for debugging).
@@ -49,6 +54,25 @@ Report it; do not silently route around bad placement.
 
 The stats block is machine-readable intent:
 
+- `geometry : pitch P | track W clearance C via V | orthogonal OK/VIOLATED
+  (needs X) | diagonals ON/OFF (need Y) | vias exclude r=R` — **the copper
+  geometry contract** (`geometry.py`). The lattice models where copper goes;
+  this line is the tool stating how BIG that copper is and what the grid must
+  therefore be. Four numbers, all derivable by hand:
+  - orthogonal needs `track_width + clearance`. VIOLATED means every pair of
+    adjacent-node tracks the router emits is a DRC violation — the board's
+    own net class does not fit its own pitch. The run continues and says so
+    loudly; do not present its output as clean. Fix by widening the pitch or
+    narrowing the class, not by rerouting.
+  - diagonals need `sqrt(2) * (track_width + clearance)`, because a 45 passes
+    a diagonally-adjacent node at `pitch/sqrt(2)`. OFF means smoothing is
+    disabled for this board and you get 90-degree geometry.
+  - vias claim every node within `via_size/2 + track_width/2 + clearance` on
+    EVERY layer, as used copper of their net. A 0.6 mm via does not fit a
+    0.5 mm grid beside anything, so this costs some routability — compare
+    `nets` against a `--no-via-exclusion` run if you need the number.
+    Via-to-via comes out conservative (the claim is symmetric); the summary
+    prints both the enforced and the required separation.
 - `nets X routable | Y fully routed | Z with failures` — Y/X is the score.
 - `overuse [...]` — collisions per iteration. Healthy runs fall monotonically
   to 0. A long plateau then a spike then 0 is the stall escape working. Ending
@@ -66,17 +90,49 @@ The stats block is machine-readable intent:
 Never present a partially-failed route as done. Report score, failures with
 reasons, and your proposed remedy for each.
 
+## Phase 3 — verify the copper (do NOT trust kicad-cli alone)
+
+**`kicad-cli pcb drc` stops reporting a rule type after 499 violations.** A
+board at 499 `[clearance]` is *saturated*, not measured: 1,968 real violations
+and 499 real violations both print as 499, so a before/after comparison across
+that ceiling is meaningless. Check every count against 199/200/499 before you
+quote it.
+
+For the category this router controls — copper it emitted against other copper
+it emitted — use the uncapped checker:
+
+```sh
+.venv/bin/python scripts/copper_audit.py SOURCE.kicad_pcb out/routed.kicad_pcb
+```
+
+It reports track-track / track-via / via-via violations with the worst gaps and
+their coordinates, and it is the number to quote when you claim a routing run
+is clean. It deliberately ignores pads, zones, the board edge, and copper that
+was already in the input file.
+
 ## Hard rules
 
 1. The input board is READ-ONLY. All output goes to a separate path;
    `writeback.py` refuses to write into the source board's directory — do not
    work around that refusal.
 2. Never hand-edit emitted `(segment)`/`(via)` nodes; regenerate instead.
-3. Current honest limitations you must disclose when relevant: clearance is
-   approximated by grid pitch (no per-class clearance yet); 2-layer boards
-   currently pay a via at most direction changes (layer-model fix in
-   progress); no placement optimization yet — the input placement is taken
-   as given.
+3. Current honest limitations you must disclose when relevant:
+   - **Track-to-track spacing is verified, not enforced.** The `geometry`
+     line proves numerically whether the pitch clears the resolved net-class
+     width; when it does not, you get a loud VIOLATED warning and illegal
+     copper anyway. The usage model still gives a track exactly one node.
+   - **Via-to-PAD spacing is the pad ring's job, and the ring is sized for a
+     track.** Ring inflate is `clearance + track_width/2`; a via wants
+     `clearance + via_size/2`. Via halos deliberately do not claim pad nodes
+     (a pad cannot move — claiming it would fail that pad's net outright
+     rather than fix anything), so a via sitting beside a foreign pad can
+     still violate by `(via_size - track_width)/2`.
+   - **Pre-existing copper in the input board is not an obstacle.** The
+     router sees pads, not the tracks and vias already in the file. On a
+     partly-routed board, expect violations against that copper.
+   - 2-layer boards currently pay a via at most direction changes (layer-model
+     fix in progress); no placement optimization yet — the input placement is
+     taken as given.
 
 ## Where this is going
 

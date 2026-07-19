@@ -65,6 +65,11 @@ class RouteResult:
     vias: list = None   # (x_mm, y_mm, net) matching tracks; None as above
     clearance_stats: dict = None  # ring/edge/degrade counters when a
                                   # lattice.Clearance was in force; else None
+    via_stats: dict = None        # via-exclusion halo counters, or None
+    geometry: object = None       # geometry.CopperGeometry in force, or None
+    geometry_note: str = None   # its one-line summary (the contract, printed
+                                # every run — the tool states its own limits)
+    geometry_warnings: list = None   # loud numeric complaints, may be empty
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -136,6 +141,62 @@ def build_connections(net_pads):
     return conns, conflicts, claim
 
 
+def _via_halo(lat, via_exclusion_mm):
+    """Planar node offsets a via claims, or None when via exclusion is off.
+
+    A via is copper of via_size diameter punched through EVERY layer. Nothing
+    in the lattice says so: a layer-change edge costs via_cost and the node it
+    lands on is one point. So the router claims a NEIGHBOURHOOD around it —
+    every node within geometry.CopperGeometry.via_exclusion_mm, on every
+    layer — as used by the via's net, and the existing capacity-1 negotiation
+    does the rest. No new kernel concept: a via becomes a mini pad ring that
+    appears and moves with the path that owns it.
+    """
+    from geometry import halo_offsets
+    if not via_exclusion_mm or via_exclusion_mm <= lat.pitch_mm / 2.0:
+        return None      # claims nothing beyond the via's own node
+    offs = halo_offsets(lat.pitch_mm, via_exclusion_mm)
+    return offs if len(offs) > 1 else None
+
+
+def _footprint(lat, path, halo, exempt=frozenset()):
+    """The nodes a path OCCUPIES for conflict accounting: its own nodes, plus
+    (when halo is on) every halo node on every layer around each of its
+    layer changes. Deliberately NOT the same thing as the path: own-tree
+    seeding and _net_stays_connected reason about the path proper, because a
+    connection may only terminate on real copper, never on a halo node.
+
+    `exempt` is the PAD node set, and it is a deliberate scope line rather
+    than an optimization. A pad cannot move. If a via's halo could claim a
+    foreign pad's node, that pad's net becomes permanently overused with no
+    alternative and fails outright — the halo would be trading a clearance
+    violation for an unroutable net, which is a worse answer, not a better
+    one. Via-to-PAD spacing is the pad ring model's job (lattice.Clearance);
+    its inflate is clearance + track_width/2, which under-serves a via by
+    (via_size - track_width)/2 — a stated residual, not a silent one. The
+    halo's remit is via-vs-ROUTED-copper, which is where the measured gap is.
+    """
+    nodes = set(path)
+    if not halo:
+        return nodes
+    W, H, L = lat.W, lat.H, lat.L
+    plane = W * H
+    for a, b in zip(path, path[1:]):
+        ax, ay, al = lat.coords(a)
+        if al == lat.coords(b)[2]:
+            continue
+        for dx, dy in halo:
+            x, y = ax + dx, ay + dy
+            if 0 <= x < W and 0 <= y < H:
+                base = y * W + x
+                for il in range(L):
+                    nd = il * plane + base
+                    if nd not in exempt:
+                        nodes.add(nd)
+    nodes.update(path)     # a path's own nodes are never exempt
+    return nodes
+
+
 def _own_tree_seed(a_nodes, kept_sets):
     """Side-aware source seeding: the a-side pad nodes plus every kept-path
     component of the net reachable (via kept paths) from them. Seeding only
@@ -160,7 +221,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   hist_weight=0.5, present_factor=1.0, present_growth=1.4,
                   max_iters=40, batch_size=128, max_rounds=100_000,
                   refine_passes=2, smooth=True, keeper_patience=3,
-                  clique_patience=8, clearance=None, clearance_soft_cost=8.0):
+                  clique_patience=8, clearance=None, clearance_soft_cost=8.0,
+                  via_exclusion_mm=0.0, allow_diagonals=True):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -195,7 +257,27 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     price added to the negotiation cost snapshot and honored by _refine and
     _clique_resolve, so post-passes cannot silently undo what negotiation
     paid to respect. None (the default, and what every hand-built test uses)
-    keeps behavior bit-identical to the pre-clearance router."""
+    keeps behavior bit-identical to the pre-clearance router.
+
+    via_exclusion_mm: radius a VIA claims around itself, on every layer, in
+    the usage/overuse accounting (geometry.CopperGeometry.via_exclusion_mm =
+    via_size/2 + track_width/2 + clearance). A via is copper with a diameter;
+    without this the lattice places 0.6 mm vias on a 0.5 mm grid beside
+    foreign copper and DRC catches what the router did not. Enforced DURING
+    negotiation rather than post-hoc precisely because vias are dynamic —
+    they appear only where a path changes layer, so a static keep-out cannot
+    know where they are, and a post-hoc legalize could only delete copper the
+    router had already committed to. Making the halo part of each net's
+    footprint lets the EXISTING capacity-1 machinery price it, rip it and
+    reroute around it. Because the claim is symmetric, via-to-via separation
+    comes out stricter than strictly required (see
+    CopperGeometry.via_via_enforced_mm) — that is a routability cost, and it
+    is reported, not hidden. 0.0 (the default, and what every hand-built test
+    uses) keeps behavior bit-identical to the pre-exclusion router.
+
+    allow_diagonals: passed to smooth.smooth_net_paths. False refuses every
+    45-degree cut (pitch too fine for a diagonal to clear a diagonally-
+    adjacent node — geometry.CopperGeometry.diagonals_ok)."""
     import mlx.core as mx
     import wavefront
 
@@ -255,6 +337,12 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             masks[net] = m
         return m
 
+    halo = _via_halo(lat, via_exclusion_mm)
+    pad_exempt = frozenset(node_owner)   # includes build_connections' claims
+
+    def foot(path):
+        return _footprint(lat, path, halo, pad_exempt)
+
     hist = np.zeros(N, dtype=np.float32)
     streak = np.zeros(N, dtype=np.int32)  # consecutive iterations overused
     keeper_hold = {}  # node -> (keeper net, consecutive iterations as keeper)
@@ -268,14 +356,39 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     t_loop = time.perf_counter()
     for it in range(1, max_iters + 1):
         iterations = it
-        kept_by_net = {}
+        # Two views of a kept path, and they are NOT interchangeable:
+        # kept_by_net carries the path proper (own-tree seeding terminates on
+        # real copper only), kept_foot carries the footprint (path + via
+        # halos) that prices the board for everyone else.
+        kept_by_net, kept_foot = {}, {}
         for c in conns:
             if c.path is not None:
                 kept_by_net.setdefault(c.net, []).append(set(c.path))
+                kept_foot.setdefault(c.net, set()).update(foot(c.path))
         kept_usage = np.zeros(N, dtype=np.float32)
-        for net, sets in kept_by_net.items():
-            nodes = set().union(*sets)
+        for net, nodes in kept_foot.items():
             kept_usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1.0
+        # A foreign via's HALO is a hard obstacle for this iteration's search,
+        # not merely a priced one. Pricing alone gives the kernel no gradient
+        # toward "put your copper where a via is not": the search cannot see
+        # halos at all, so a ripped connection re-lands in one, gets ripped
+        # again, and the overuse curve plateaus instead of falling (measured
+        # on icebreaker-bitsy: stuck at ~700-1500 overused nodes through 120
+        # iterations, 26 nets dropped). Blocking is safe because a halo is
+        # small and dynamic — it moves with the via that owns it, so the next
+        # iteration re-derives it rather than baking a permanent keep-out.
+        halo_by_net = {}
+        halo_all = np.zeros(N, dtype=np.uint8)
+        if halo:
+            for net, nodes in kept_foot.items():
+                own_path = set()
+                for s in kept_by_net.get(net, []):
+                    own_path |= s
+                ring = nodes - own_path
+                if ring:
+                    idx = np.fromiter(ring, dtype=np.int64, count=len(ring))
+                    halo_by_net[net] = idx
+                    halo_all[idx] = 1
         cost_np = hist + np.float32(present) * kept_usage
         if soft_np is not None:
             cost_np = cost_np + soft_np
@@ -287,7 +400,13 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             blk = np.zeros((N, len(chunk)), dtype=np.uint8)
             sources = []
             for b, c in enumerate(chunk):
-                blk[:, b] = net_mask(c.net)
+                col = net_mask(c.net)
+                if halo:
+                    col = col | halo_all
+                    own_ring = halo_by_net.get(c.net)
+                    if own_ring is not None:   # own net's halo stays passable
+                        col[own_ring] = net_mask(c.net)[own_ring]
+                blk[:, b] = col
                 # Own-tree reuse becomes free at the source set (_own_tree_seed).
                 seed = _own_tree_seed(c.a_nodes, kept_by_net.get(c.net, []))
                 blk[list(seed | set(c.b_nodes)), b] = 0
@@ -326,7 +445,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         nodes_by_net = {}
         for c in conns:
             if c.path is not None:
-                nodes_by_net.setdefault(c.net, set()).update(c.path)
+                nodes_by_net.setdefault(c.net, set()).update(foot(c.path))
         usage = np.zeros(N, dtype=np.int32)
         for net, nodes in nodes_by_net.items():
             usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1
@@ -383,7 +502,10 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         for c in conns:
             if c.path is None:
                 continue
-            for v in c.path:
+            # Footprint, not path: a connection whose VIA HALO lands on an
+            # overused node is a party to that conflict and must be rippable,
+            # even though no copper of its own sits on the node.
+            for v in foot(c.path):
                 if v not in over_nodes:
                     continue
                 if c not in touched:
@@ -432,7 +554,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                                           touched[c], c.net))
                 t0 = time.perf_counter()
                 _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N,
-                                max_rounds, seq_fail, soft_np=soft_np)
+                                max_rounds, seq_fail, soft_np=soft_np,
+                                foot=foot)
                 sec["clique"] = sec.get("clique", 0.0) + \
                     (time.perf_counter() - t0)
                 for n in core:  # cooldown: re-arm the window from scratch
@@ -455,20 +578,21 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         for c in conns:
             if c.path is None:
                 continue
-            hit = next((v for v in c.path if claimed.get(v, c.net) != c.net), None)
+            fp = foot(c.path)
+            hit = next((v for v in fp if claimed.get(v, c.net) != c.net), None)
             if hit is not None:
                 c.reason = (f"congestion unresolved after {iterations} iterations "
                             f"(node {hit} contested with net {claimed[hit]})")
                 c.path = None
             else:
-                for v in c.path:
+                for v in fp:
                     claimed[v] = c.net
 
     if refine_passes > 0 and overuse_curve and overuse_curve[-1] == 0:
         t0 = time.perf_counter()
         before, after = _refine(lat, conns, net_mask, rp, ci, wt, N,
                                 refine_passes, batch_size, max_rounds,
-                                soft_np=soft_np)
+                                soft_np=soft_np, foot=foot)
         sec["refine"] = time.perf_counter() - t0
         sec["refine_gain_pct"] = (100.0 * (before - after) / before
                                   if before > 0 else 0.0)
@@ -496,6 +620,11 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             "soft_crossings": soft_x,
             "inflate_mm": clearance.inflate_mm,
         }
+    via_stats = None
+    if halo:
+        via_stats = {"exclusion_mm": float(via_exclusion_mm),
+                     "halo_nodes_per_layer": len(halo),
+                     "halo_layers": lat.L}
 
     t0 = time.perf_counter()
     tracks, vias = paths_to_tracks(lat, net_paths)
@@ -509,16 +638,20 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         # every net). Path nodes overlay pad rectangles so an extra_allow
         # crossing reads as the crossing net — conservative for the pad's
         # own net near it.
+        # Via halos join the occupancy too: a chamfer must not cut a corner
+        # into the exclusion zone of another net's via, which the raw path
+        # (routed under the halo-aware usage model) respected by construction.
         occupied = dict(node_owner)
         if clearance is not None:
             occupied.update(clearance.node_net)
         for net, paths in net_paths.items():
             for path in paths:
-                for v in path:
+                for v in _footprint(lat, path, halo, pad_exempt):
                     occupied[v] = net
         sm_tracks = polylines_to_tracks(
             smooth_net_paths(lat, net_paths, occupied,
-                             pad_nodes=frozenset(node_owner)))
+                             pad_nodes=frozenset(node_owner),
+                             allow_diagonals=allow_diagonals))
         sm_vias = vias  # smoothing preserves vias and layer splits exactly
     if sm_tracks is not None:
         wirelength = sum(math.hypot(x2 - x1, y2 - y1)
@@ -532,7 +665,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                        iterations=iterations, overuse_curve=overuse_curve,
                        wirelength_mm=wirelength, via_count=len(vias), seconds=sec,
                        tracks=sm_tracks, vias=sm_vias,
-                       clearance_stats=clearance_stats)
+                       clearance_stats=clearance_stats,
+                       via_stats=via_stats)
 
 
 def _net_stays_connected(net_conns, conn, cand):
@@ -565,7 +699,7 @@ def _net_stays_connected(net_conns, conn, cand):
 
 
 def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
-            max_rounds, soft_np=None):
+            max_rounds, soft_np=None, foot=None):
     """Post-negotiation slack recovery. Reroute every routed connection
     against the FINISHED board — every node of every OTHER net's current path
     a hard obstacle, no hist/present pricing — and adopt a candidate only if
@@ -581,11 +715,21 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     earlier adoption of a DIFFERENT net this batch is dropped, and an
     adopter's old nodes are NOT freed for later planes (the snapshot stays
     conservative; the next batch/pass picks up the slack). Intra-net safety
-    is _net_stays_connected. Returns (cost_before, cost_after)."""
+    is _net_stays_connected. Returns (cost_before, cost_after).
+
+    foot(path) -> the nodes a path occupies (path + via halos; plain set(path)
+    when via exclusion is off). Obstacles, adoption claims and the legality
+    audit all speak footprints. The kernel cannot see a candidate's OWN new
+    via halo, so every candidate is re-checked against used_all before it is
+    adopted — otherwise refine could shorten a path by parking a fresh via
+    beside another net's copper and the audit would fire."""
     import mlx.core as mx
     import wavefront
     from backtrace import path_cost
 
+    if foot is None:
+        def foot(path):
+            return set(path)
     soft_mx = mx.array(soft_np) if soft_np is not None else None
 
     def soft_sum(path):
@@ -610,7 +754,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
             used_all = np.zeros(N, dtype=np.uint8)
             own_nodes = {}
             for net, cs in by_net.items():
-                nodes = set().union(*(set(c.path) for c in cs))
+                nodes = set().union(*(foot(c.path) for c in cs))
                 own_nodes[net] = nodes
                 used_all[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
 
@@ -668,12 +812,17 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
                                      lat.weight) + soft_sum(c.path)
                 if not new_cost < old_cost - 1e-6:
                     continue
-                if any(claimed.get(v, c.net) != c.net for v in cand):
+                fp = foot(cand)
+                # The kernel avoided every OTHER net's footprint, but not the
+                # halo of a via this candidate itself introduces. Re-check.
+                if any(used_all[v] and v not in own_nodes[c.net] for v in fp):
+                    continue
+                if any(claimed.get(v, c.net) != c.net for v in fp):
                     continue
                 if not _net_stays_connected(by_net[c.net], c, cand):
                     continue
                 c.path = cand
-                for v in cand:
+                for v in fp:
                     claimed[v] = c.net
     cost_after = total_cost()
 
@@ -682,7 +831,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     nodes_by_net = {}
     for c in conns:
         if c.path is not None:
-            nodes_by_net.setdefault(c.net, set()).update(c.path)
+            nodes_by_net.setdefault(c.net, set()).update(foot(c.path))
     usage = np.zeros(N, dtype=np.int32)
     for nodes in nodes_by_net.values():
         usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1
@@ -721,7 +870,7 @@ def _components(edges):
 
 
 def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
-                    seq_fail, soft_np=None):
+                    seq_fail, soft_np=None, foot=None):
     """Break a multi-party standoff by SEQUENTIAL rip-up-and-reroute.
 
     Rip every connection in `group`, then route them one at a time against
@@ -736,6 +885,9 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
     import mlx.core as mx
     import wavefront
 
+    if foot is None:
+        def foot(path):
+            return set(path)
     soft_mx = mx.array(soft_np) if soft_np is not None else None
     for c in group:
         c.path = None
@@ -747,7 +899,7 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
     used = np.zeros(N, dtype=np.uint8)
     own_nodes = {}
     for net, cs in by_net.items():
-        nodes = set().union(*(set(o.path) for o in cs))
+        nodes = set().union(*(foot(o.path) for o in cs))
         own_nodes[net] = nodes
         used[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
     for c in group:
@@ -784,12 +936,17 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
                                             cost=soft_np)
                     except ValueError:
                         path = None
+        nodes = foot(path) if path is not None else None
+        # As in _refine: the kernel could not see the halo of a via this very
+        # path introduces. A candidate whose halo lands on foreign copper is
+        # not a solution — fail it loudly and let the ordering self-correct.
+        if nodes is not None and any(used[v] and v not in own for v in nodes):
+            path = None
         if path is None:
             seq_fail[id(c)] = seq_fail.get(id(c), 0) + 1
             continue
         c.path = path
         c.reason = None
-        nodes = set(path)
         by_net.setdefault(c.net, []).append(c)
         own_nodes.setdefault(c.net, set()).update(nodes)
         used[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
@@ -880,7 +1037,8 @@ def net_pads_for_board(board, lat, node_owner=None):
 
 def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
-                track_width_mm=None, **kwargs):
+                track_width_mm=None, via_size_mm=None, via_exclusion=True,
+                **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
 
     directions/via_cost/dir_penalty go to lattice_for_board (board-routing
@@ -891,14 +1049,28 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     the board edge (lattice.clearance_map). None -> the project Default
     class clearance, else 0.2 mm; 0 disables the clearance model entirely
     (the old pitch-is-clearance behavior). track_width_mm overrides the
-    project Default class width the ring inflation reads."""
+    project Default class width the ring inflation reads.
+
+    via_size_mm / via_exclusion: the copper geometry contract
+    (geometry.resolve_board_geometry) is computed for every board and drives
+    two things the lattice alone cannot know — the radius a via claims around
+    itself (via_exclusion=False disables it, restoring the pre-exclusion
+    router) and whether 45-degree smoothing is geometrically legal at this
+    pitch. It also VERIFIES the orthogonal track-track claim numerically and
+    puts the numbers on RouteResult.geometry_warnings when a board's pitch is
+    too fine for its own track width. Nothing here is silent."""
     from board import load_board
+    from geometry import resolve_board_geometry
     from lattice import (DEFAULT_CLEARANCE_MM, clearance_map, lattice_for_board,
                          pad_overlap_allowances)
 
     t0 = time.perf_counter()
     brd = load_board(board_path)
     t_load = time.perf_counter() - t0
+    geo = resolve_board_geometry(board_path, pitch_mm, brd.nets,
+                                 clearance_mm=clearance_mm,
+                                 track_width_mm=track_width_mm,
+                                 via_size_mm=via_size_mm)
     t0 = time.perf_counter()
     lat, pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
                                                    layer_names=layer_names,
@@ -913,10 +1085,16 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                               track_width_mm=track_width_mm) \
         if clearance_mm > 0 else None
     t_lat = time.perf_counter() - t0
+    kwargs.setdefault("via_exclusion_mm",
+                      geo.via_exclusion_mm if via_exclusion else 0.0)
+    kwargs.setdefault("allow_diagonals", geo.diagonals_ok)
     res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
                         node_owner, extra_allow=extra_allow,
                         clearance=clearance, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
+    res.geometry = geo
+    res.geometry_note = geo.summary()
+    res.geometry_warnings = geo.warnings()
     return brd, lat, res
 
 
@@ -963,6 +1141,10 @@ def main(argv=None):
     ap.add_argument("--directions", choices=("both", "alternating"), default="both",
                     help="both: every layer H+V with preferred-direction pricing; "
                          "alternating: one direction per layer (default both)")
+    ap.add_argument("--no-via-exclusion", action="store_true",
+                    help="stop vias claiming their clearance neighbourhood "
+                         "(restores the pre-exclusion router; emits illegal "
+                         "copper wherever a via sits beside another net)")
     ap.add_argument("--clearance", type=float, default=None,
                     help="copper-to-foreign-pad / board-edge spacing in mm "
                          "(default 0.2; 0 disables the clearance model)")
@@ -973,6 +1155,7 @@ def main(argv=None):
                                 directions=args.directions, via_cost=args.via_cost,
                                 dir_penalty=args.dir_penalty,
                                 clearance_mm=args.clearance,
+                                via_exclusion=not args.no_via_exclusion,
                                 refine_passes=0 if args.no_refine else 2,
                                 smooth=not args.no_smooth)
 
@@ -986,6 +1169,9 @@ def main(argv=None):
     print(f"nets        : {len(routable)} routable | "
           f"{len(routable - failed_nets)} fully routed | {len(failed_nets)} with failures")
     print(f"connections : {conn_total}  ({len(res.conflicts)} pad-snap conflicts)")
+    print(f"geometry    : {res.geometry_note}")
+    for w in (res.geometry_warnings or []):
+        print(f"WARNING     : {w}")
     print(f"iterations  : {res.iterations}")
     print(f"overuse     : {res.overuse_curve}")
     print(f"wirelength  : {res.wirelength_mm:.1f} mm")
@@ -999,6 +1185,11 @@ def main(argv=None):
               f"({cs['edge_nodes']} edge) | "
               f"{cs['degraded_pairs']} pad pairs degraded to soft | "
               f"{cs['soft_crossings']} connections cross soft nodes")
+    if res.via_stats:
+        vs = res.via_stats
+        print(f"via exclude : r {vs['exclusion_mm']:.3f} mm | "
+              f"{vs['halo_nodes_per_layer']} nodes/layer x "
+              f"{vs['halo_layers']} layers claimed per via")
     print("seconds     : " + " | ".join(f"{k} {v:.2f}" for k, v in res.seconds.items()
                                         if not k.endswith("_pct")))
     for net, reason in res.failed[:10]:

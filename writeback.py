@@ -627,6 +627,9 @@ def main(argv=None):
     ap.add_argument("--width-map", default="", metavar="GLOB=W[:VIA:DRILL],...",
                     help="per-net width overrides by net-name glob, applied "
                          "after project net classes; last matching glob wins")
+    ap.add_argument("--no-via-exclusion", action="store_true",
+                    help="stop vias claiming their clearance neighbourhood "
+                         "(restores the pre-exclusion router)")
     ap.add_argument("--max-width", type=float, default=None,
                     help="cap emitted track widths at this many mm "
                          "(default: the lattice pitch)")
@@ -635,7 +638,8 @@ def main(argv=None):
 
     from pathfinder import route_board, paths_to_tracks
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
-                                layer_names=layers)
+                                layer_names=layers,
+                                via_exclusion=not args.no_via_exclusion)
     # Prefer the router's smoothed geometry (45-degree segments emit as plain
     # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
     # lattice geometry is the fallback when smoothing was disabled.
@@ -657,6 +661,15 @@ def main(argv=None):
 
     write_routed_copy(args.board, args.out, tracks, vias, brd.nets,
                       widths=widths)
+    failed_nets = {n for n, _ in res.failed}
+    routable = set(res.net_paths) | failed_nets
+    print(f"nets        : {len(routable)} routable | "
+          f"{len(routable - failed_nets)} fully routed | "
+          f"{len(failed_nets)} with failures")
+    if getattr(res, "geometry_note", None):
+        print(f"geometry    : {res.geometry_note}")
+    for w in (getattr(res, "geometry_warnings", None) or []):
+        print(f"WARNING     : {w}")
     print(f"wrote       : {args.out}")
     print(f"net classes : {pro or 'none (emitter defaults)'}")
     print(f"tracks      : {len(tracks)} appended ({len(brd.tracks)} already in file)")
