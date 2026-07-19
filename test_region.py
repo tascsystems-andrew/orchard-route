@@ -1,4 +1,4 @@
-"""L6 region-solver validation: synthetic first, then the real Voxy gain stage.
+"""L6 region-solver validation: synthetic first, then a committed gain stage.
 
 Synthetic scenarios are hand-built .kicad_pcb files small enough to reason
 about in your head, because the four properties that matter are all easy to
@@ -17,9 +17,10 @@ fake and hard to notice faking:
    identical routed numbers.
 4. OUT-OF-REGION PARTS NEVER MOVE, and the source board's bytes never change.
 
-Then the acceptance test from REGION_SOLVER.md on the real Voxy board
-(READ-ONLY), reported honestly — see ACCEPTANCE below for how the stage was
-chosen.
+Then the acceptance test from REGION_SOLVER.md on a committed gain-stage
+fixture (fixtures/gain_stage.kicad_pcb — this test OWNS it, replacing the old
+read of Andrew's live, mid-redesign Voxy board), reported honestly — see
+ACCEPTANCE below for what the stage is.
 
 Run: .venv/bin/python test_region.py [--no-acceptance] [--only NAME]
 """
@@ -38,7 +39,8 @@ from place import parts_from_board
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out",
                        "test-region")
 SYN_DIR = os.path.join(OUT_DIR, "synthetic-src")
-VOXY = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+GAIN_STAGE = os.path.join(FIXTURES, "gain_stage.kicad_pcb")
 
 failures = []
 
@@ -354,29 +356,29 @@ def test_errors():
 # ── the acceptance test (REGION_SOLVER.md) ───────────────────────────────────
 
 ACCEPTANCE = """
-How the stage was chosen (Voxy-arduino.kicad_pcb, READ-ONLY)
------------------------------------------------------------
-This board carries NO 9-pin socket: it is the Voxy control/switching board and
-the 12AX7 itself lives on the tube board, reached through 2-pin terminals. So
-"the triode's ~8-12 associated parts" were found from the netlist, not from a
-socket footprint. Nets are suffixed by section (T1/T2 = the two triodes, P1 =
-the pentode); the triode-1 GAIN STAGE is the cluster that touches its grid and
-plate terminals:
+The gain stage (fixtures/gain_stage.kicad_pcb)
+----------------------------------------------
+A committed, self-contained 12AX7 triode-1 gain stage this test OWNS — 13
+movable parts the region solver places and routes inside a 20 x 50 mm fence at
+(100, 15). It replaces the old read of Andrew's live Voxy board, which broke
+whenever a part moved mid-redesign; the fixture is frozen and canonical, and
+fixtures/gen_gain_stage.py documents how every asserted number was derived.
 
-  G1T1  grid terminal to the tube          net Net-(G1T1-Pad1)   <- the socket
-  PT1   plate terminal to the tube         net Net-(Q2-G)
-  GstopT1 switched grid-stopper module     Audio Input T1 / Net-(G1T1-Pad1)
-  R22   grid leak to ground                Audio Input T1 / GND-C
+  G1T1  the tube "socket" (fixed)          grid GRIDIN / plate PLATE
+  GstopT1 switched grid-stopper module     GRIDIN / GSTOPLED
+  R22   grid leak to ground                GRIDIN / GND-C
   Q2 + CCS1 + R36 + R29                    the plate-load current source
-  C10   plate output coupling cap          Plate Audio Out T1
-  R55   plate audio divider                Plate Audio Out T1 / GND-C
-  R23 + R21  plate voltage sense divider   Plate Voltage T1
-  R27   grid-stopper LED resistor          Gstop LED T1
+  PT1   plate terminal                     PLATE / PLATEOUT
+  C10   plate output coupling cap          PLATE / PLATEOUT
+  R55   plate audio divider                PLATEOUT / GND-C
+  R23 + R21  plate voltage sense divider   PLATE / VSENSE / GND-C
+  R27   grid-stopper LED resistor          GSTOPLED / GND-C
 
-13 parts in a 13 x 52 mm strip at x~104, y~18..62. G1T1 stands in for the tube
-socket (fixed), GstopT1 is the grid stopper that must stay at the grid pin, and
-R55 is the plate resistor that must stay away from the grid input — exactly the
-three constraints the spec names.
+G1T1 stands in for the tube socket (fixed), GstopT1 is the grid stopper that
+must stay at the grid pin, and R55 is the plate resistor that must stay away
+from the grid input — exactly the three constraints the spec names. Four nets
+(GRIDIN, PLATEOUT, VPLUS, GND-C) reach furniture outside the fence, so they
+cross it and become boundary terminals.
 """
 
 ACC_COMPONENTS = ["G1T1", "PT1", "GstopT1", "R22", "Q2", "CCS1", "R36", "R29",
@@ -388,40 +390,23 @@ ACC_CONSTRAINTS = [
     "min_distance(R55,G1T1,4)",                 # plate R away from grid input
 ]
 
-# The two ACC_REGION-dependent tests below (acceptance, geometry_warnings) are
-# SKIPPED, not updated. As of 2026-07-19 the live Voxy board is mid-redesign:
-# the 12AX7 gain stage is half-relocated (the cluster is at x~435, y~-72..-43,
-# but GstopT1 sits at (497, 7.7) and CCS1 at (497, 13.6) — ~95-100 mm from
-# G1T1), so ACC_REGION no longer bounds the stage and re-deriving numbers here
-# would just re-break the next time Andrew nudges a part. Per the board owner,
-# the real fix is a COMMITTED FROZEN gain-stage fixture that this test owns,
-# instead of reading his live board — see the note in test_acceptance. Until
-# that fixture lands, these two skip-with-note so the suite is green AND honest.
-# preflight is left live: it only depends on GstopT1's (unchanged) courtyard
-# geometry and the fence area, both independent of where the parts sit.
-SKIP_LIVE_ACCEPTANCE = (
-    "Voxy is mid-redesign — the 12AX7 gain stage is half-relocated, so "
-    "ACC_REGION no longer bounds it. Pending a committed frozen fixture "
-    "(see test_acceptance); NOT re-derived against the live board.")
-
 
 def test_preflight():
     """adjacency_max_distance is CENTER-to-center, so on real parts it has a
     hard geometric floor. The floor must be EXACT in both directions: refusing
-    a buildable number is as bad as accepting an impossible one, and Voxy is
-    the board that punishes the lazy version — its grid-stopper module's
-    origin is 1.45 mm from one courtyard edge and 9.07 mm from the other, so
-    assuming a centred courtyard puts the floor at 3.57 mm when the truth is
-    2.30 mm, and the spec's own 3 mm constraint would be wrongly rejected."""
+    a buildable number is as bad as accepting an impossible one, and GstopT1 is
+    the part that punishes the lazy version — its off-centre origin is 1.45 mm
+    from one courtyard edge and 4.50 mm from the other (G1T1's is a centred
+    0.85 mm square), so assuming a centred courtyard would put the floor at
+    3.82 mm when the truth is 0.85 + 1.45 = 2.30 mm, and the spec's own 3 mm
+    constraint would be wrongly rejected."""
     print("=== preflight: impossible constraints are proved impossible, and "
           "possible ones are not ===")
-    if not os.path.exists(VOXY):
-        print(f"  SKIP {VOXY}: board absent")
-        return
     from constraints import parse_constraints
     from region import preflight
     known = set(ACC_COMPONENTS)
-    parts = [parts_from_board(VOXY, ACC_COMPONENTS)[r] for r in ACC_COMPONENTS]
+    parts = [parts_from_board(GAIN_STAGE, ACC_COMPONENTS)[r]
+             for r in ACC_COMPONENTS]
 
     def pf(mm):
         return preflight(parts, ACC_REGION, parse_constraints(
@@ -445,25 +430,19 @@ def test_preflight():
 
 def test_geometry_warnings():
     """The module must name the places its model of the copper is thinner
-    than the copper. Voxy's Q2/Q3 are SOT-89s whose pad 2 is a `custom` pad:
-    board.py reads the 1.475 x 0.9 anchor rect and never sees the 3.1 x 1.7 mm
-    heat-tab primitive, so the router will cross it and KiCad's DRC will call
-    it a short — verified against kicad-cli on cand-1. Silence about that
-    would be the black box."""
+    than the copper. The fixture's Q2 (movable) and Q3 (a frozen part whose
+    courtyard intrudes the fence) are SOT-89s whose pad 2 is a `custom` pad:
+    board.py reads the 1.475 x 0.9 anchor rect and never sees the larger
+    heat-tab primitive, so the router would cross it and KiCad's DRC would call
+    it a short. Silence about that would be the black box."""
     print("=== the tool names its own blind spots ===")
-    if SKIP_LIVE_ACCEPTANCE:
-        print(f"  SKIP: {SKIP_LIVE_ACCEPTANCE}")
-        return
-    if not os.path.exists(VOXY):
-        print(f"  SKIP {VOXY}: board absent")
-        return
     from region import custom_pad_refs
-    with open(VOXY, encoding="utf-8") as f:
+    with open(GAIN_STAGE, encoding="utf-8") as f:
         custom = set(custom_pad_refs(f.read()))
     check({"Q2", "Q3"} <= custom,
           f"the SOT-89s with custom heat-tab pads are detected "
           f"({len(custom)} such footprints on the board)")
-    res = optimize_region(VOXY, ACC_COMPONENTS, ACC_REGION,
+    res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
                           constraints=ACC_CONSTRAINTS, k=1,
                           out_dir=os.path.join(OUT_DIR, "warn"), sweeps=30)
     w = res.diagnostics.get("geometry_warnings") or []
@@ -478,24 +457,12 @@ def test_geometry_warnings():
 
 
 def test_acceptance():
-    print("=== ACCEPTANCE: one Voxy 12AX7 gain stage ===")
+    print("=== ACCEPTANCE: one 12AX7 gain stage ===")
     print(ACCEPTANCE)
-    # Real fix (agreed with the board owner): replace the live-board read below
-    # with a committed, hand-authored frozen gain-stage .kicad_pcb this test
-    # owns — a canonical stage (the ACC_COMPONENTS parts, a fence that bounds
-    # them, strippable copper, the three spec constraints satisfiable) that
-    # never depends on the redesign state of Andrew's Documents/ board. Until
-    # that fixture exists, skip rather than re-derive transient coordinates.
-    if SKIP_LIVE_ACCEPTANCE:
-        print(f"  SKIP: {SKIP_LIVE_ACCEPTANCE}")
-        return
-    if not os.path.exists(VOXY):
-        print(f"  SKIP {VOXY}: board absent")
-        return
-    before = sha256(VOXY)
+    before = sha256(GAIN_STAGE)
     out = os.path.join(OUT_DIR, "acceptance")
     t0 = time.perf_counter()
-    res = optimize_region(VOXY, ACC_COMPONENTS, ACC_REGION,
+    res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
                           constraints=ACC_CONSTRAINTS, k=5, pitch_mm=0.5,
                           layers=["F.Cu", "B.Cu"], out_dir=out, seed=0,
                           progress=lambda m: print("   " + m, flush=True))
@@ -506,7 +473,7 @@ def test_acceptance():
     _print_summary(res, out)
     print()
 
-    check(sha256(VOXY) == before, "the Voxy board's bytes are untouched")
+    check(sha256(GAIN_STAGE) == before, "the source board's bytes are untouched")
     check(len(res.candidates) == 5, f"5 candidates shipped "
                                     f"(got {len(res.candidates)})")
     allrouted = all(c.nets_ok == c.nets_total for c in res.candidates)
@@ -527,7 +494,7 @@ def test_acceptance():
           f"diagnostics: the binding constraint is named with its slack "
           f"({bc['constraint']} at {bc['min_slack_mm']} mm)" if bc else
           "diagnostics: no binding constraint reported")
-    home = parts_from_board(VOXY, ["G1T1"])["G1T1"]
+    home = parts_from_board(GAIN_STAGE, ["G1T1"])["G1T1"]
     check(all(abs(c.placements["G1T1"][0] - home.x_mm) < 1e-9
               and abs(c.placements["G1T1"][1] - home.y_mm) < 1e-9
               for c in res.candidates),
@@ -549,8 +516,8 @@ def test_acceptance():
 
 
 def _hand_wirelength(out):
-    """The same fence and the same parts routed AT ANDREW'S HAND PLACEMENT —
-    the 2x yardstick of the spec's acceptance test.
+    """The same fence and the same parts routed AT THE FIXTURE'S HAND
+    PLACEMENT — the 2x yardstick of the spec's acceptance test.
 
     It goes through region.py's own _route_candidate on the stripped source
     board, so the baseline comes from the identical lattice, clearance model,
@@ -563,21 +530,21 @@ def _hand_wirelength(out):
                         strip_tracks_in_rect, _pad_owner_refs)
     from lattice import default_copper_rules
     try:
-        brd = load_board(VOXY)
-        ref_of_pad = _pad_owner_refs(VOXY, brd)
+        brd = load_board(GAIN_STAGE)
+        ref_of_pad = _pad_owner_refs(GAIN_STAGE, brd)
         movable = set(ACC_COMPONENTS)
         terminals, _fixed = boundary_terminals(brd, ref_of_pad, movable,
                                                ACC_REGION)
         codes = {t.net_code for t in terminals}
         codes |= {p.net_code for i, p in enumerate(brd.pads)
                   if p.net_code > 0 and ref_of_pad[i] in movable}
-        with open(VOXY, encoding="utf-8") as f:
+        with open(GAIN_STAGE, encoding="utf-8") as f:
             text, _a, _b = strip_tracks_in_rect(f.read(), ACC_REGION)
-        base = os.path.join(out, "hand", os.path.basename(VOXY))
+        base = os.path.join(out, "hand", os.path.basename(GAIN_STAGE))
         os.makedirs(os.path.dirname(base), exist_ok=True)
         with open(base, "w", encoding="utf-8") as f:
             f.write(text)
-        clr, width = default_copper_rules(VOXY)
+        clr, width = default_copper_rules(GAIN_STAGE)
         j = _route_candidate(base, ACC_REGION, 0.5, ["F.Cu", "B.Cu"], movable,
                              codes, terminals, clr, width, {})
     except Exception as e:                       # noqa: BLE001 - reported
@@ -701,13 +668,6 @@ def test_locked_flag():
     parts = parts_from_board(src)
     check(parts["L1"].locked and not parts["P1"].locked,
           "the flag propagates through place.Part")
-    if os.path.exists(VOXY):
-        with open(VOXY, encoding="utf-8") as f:
-            vlocked = sorted(r.uref for r in board_footprints(f.read())
-                             if r.locked)
-        check(len(vlocked) == 9 and "S1" in vlocked and "DS1" in vlocked,
-              f"Voxy's own locked panel controls are read from (locked yes): "
-              f"{vlocked}")
 
 
 def test_area_fence():
@@ -729,11 +689,6 @@ def test_area_fence():
     except ValueError as e:
         check("out of range" in str(e), f"out-of-range area names the count "
                                         f"({str(e)[:50]}...)")
-    if os.path.exists(VOXY):
-        vf = area_fence(VOXY, 0)
-        check(len(vf) == 4 and vf[2] > 0,
-              f"--area resolves on the real Voxy board too "
-              f"({tuple(round(v, 1) for v in vf)})")
 
 
 def test_auto_fix_locked():

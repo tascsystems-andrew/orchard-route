@@ -1,33 +1,30 @@
-"""L1 validation: parse two real KiCad 10 boards and check geometry end to end.
+"""L1 validation: parse a committed KiCad 10 board and check geometry end to end.
 
-NOTE (2026-07-19): the PRIMARY fixture (Voxy-arduino.kicad_pcb) is mid-redesign
-— ~93% of its netted pads are currently staged outside the Edge.Cuts while the
-board is re-laid-out, and C65 sits off-board at ~(573, -82.7). So its C65 pad
-spot-check and the "all pads inside the outline" invariant are SKIPPED here
-(the Edge.Cuts *size* is still asserted; origin is unchanged). Reading a live,
-in-flux board for hand-verified spot-checks is the treadmill this suite is on;
-the agreed real fix is committed FROZEN fixtures the tests own — see below.
+The primary fixture is fixtures/parser_board.kicad_pcb — a small, self-contained
+KiCad 10 board this test OWNS (it used to read Andrew's live, mid-redesign amp
+projects, which broke every time a part moved). Every spot-check expectation
+below was derived BY HAND from the raw file text, so it catches transform bugs
+independently of the parser:
 
-The fixtures are Andrew's live amp projects (READ-ONLY — never write to them).
-Spot-check expectations below were derived BY HAND from the raw file text, so
-they catch transform bugs independently of the parser:
+parser_board.kicad_pcb — KiCad 10 (version 20260206): NO root net table, so net
+  codes are synthesized 1..K from the sorted set of quoted names. 4-layer
+  stackup (F.Cu, In1.Cu, In2.Cu, B.Cu). Edge.Cuts gr_lines span x 10 .. 70,
+  y -5 .. 35 -> origin (10, -5), size (60, 40). Three footprints exercise the
+  cases the live boards used to:
 
-Voxy-arduino.kicad_pcb — C65 (SKIPPED, mid-redesign): this SMD cap's hand
-  spot-check used to read footprint (at 243.59 22.87) -> pad1 (242.64, 22.87),
-  pad2 (244.54, 22.87). The part is now staged off-board (~573, -82.7) and the
-  check is skipped rather than re-pointed at a moving target.
+  C1, "Capacitor_SMD:C_0805_2012Metric", (at 30 15) UNROTATED SMD;
+    pad "1" smd (at -0.95 0) net "Net-(C1-Pad1)" -> abs (29.05, 15)
+    pad "2" smd (at  0.95 0) net "GND"           -> abs (30.95, 15)
 
-hifi tube pre.kicad_pcb — "5755", footprint "Valve:Valve_ECC-83-2",
-  footprint (at 78.241278 144.721998 -90) — the rotated-footprint case;
-  pad "1" thru_hole (at 1.790008 2.351225 216) (drill oval 1.02 2.03)
-  pad "4" thru_hole (at 1.71253 -11.99285 324)
-  KiCad rotation is CCW with Y down, so -90 maps local (ox, oy) to
-  (fx + oy, fy + ox):
-  pad 1 -> (78.241278 - 2.351225, 144.721998 + 1.790008) = (75.890053, 146.512006)
-  pad 4 -> (78.241278 + 11.99285, 144.721998 + 1.71253)  = (90.234128, 146.434528)
+  V1, "Valve:Valve_ECC-83-2", (at 45 20 -90) — the ROTATED-footprint case.
+    KiCad rotation is CCW with Y down, so -90 maps local (ox, oy) to
+    (fx - oy, fy + ox):
+    pad "1" thru_hole (at 2.0  3.0 216) (drill oval 1.02 2.03) -> (42.0, 22.0)
+    pad "4" thru_hole (at 2.0 -3.0 324) (drill oval 1.02 2.03) -> (48.0, 22.0)
 
-Voxy Edge.Cuts extremes read straight off the gr_rect/gr_line nodes:
-  x 0 .. 365.629, y -46.99 .. 176.64  ->  origin (0, -46.99), size (365.629, 223.630)
+  Q1, "Package_TO_SOT_SMD:SOT-89-3", (at 20 10) with a CUSTOM heat-tab pad;
+    pad "2" smd custom (at 0 -0.9) (size 1.475 0.9) net "HEAT" -> abs (20, 9.1),
+    read as its 1.475 x 0.9 ANCHOR rect, never the larger primitive.
 
 Two more fixtures come from bench/boards/ (gitignored, see
 bench/boards/SOURCES.md — SKIPPED with a note when absent, e.g. fresh clone):
@@ -49,13 +46,8 @@ from collections import Counter
 
 from board import load_board
 
-PRIMARY = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
-SECOND = "/Users/andrew/Documents/Guitar/Voxy/Voxy/hifi tube pre.kicad_pcb"
-
-# Boards currently mid-redesign, where "all parts inside the outline" and the
-# hand-picked pad spot-checks are legitimately in flux. Checks keyed off these
-# skip-with-note instead of asserting transient geometry. See docstring NOTE.
-MID_REDESIGN_PATHS = {PRIMARY}
+_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+PARSER = os.path.join(_FIXTURES, "parser_board.kicad_pcb")
 
 _BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "boards")
 PICO_VGA = os.path.join(_BENCH, "rpi-pico-vga", "pico_vga_sd_aud.kicad_pcb")
@@ -105,20 +97,10 @@ def check_common(board):
     netted = [p for p in board.pads if p.net_code > 0]
     outside = [p for p in netted
                if not (x0 - 5 <= p.x_mm <= x0 + w + 5 and y0 - 5 <= p.y_mm <= y0 + h + 5)]
-    if board.path in MID_REDESIGN_PATHS:
-        # This board is mid-redesign: as of 2026-07-19 ~93% of netted pads are
-        # staged well outside the current Edge.Cuts while Andrew re-lays it out,
-        # so "everything inside the outline" is legitimately false. Skip-with-
-        # note rather than assert a transient truth; a committed frozen fixture
-        # (see module docstring NOTE) is the real fix.
-        print(f"  SKIP netted-pads-inside-outline: {board.path.split('/')[-1]} "
-              f"is mid-redesign ({len(outside)}/{len(netted)} pads staged "
-              f"off-outline) — frozen-fixture decoupling pending")
-    else:
-        check(not outside,
-              f"all {len(netted)} netted pads inside Edge.Cuts bbox + 5mm"
-              + (f" ({len(outside)} outside, first at "
-                 f"({outside[0].x_mm:.2f}, {outside[0].y_mm:.2f}))" if outside else ""))
+    check(not outside,
+          f"all {len(netted)} netted pads inside Edge.Cuts bbox + 5mm"
+          + (f" ({len(outside)} outside, first at "
+             f"({outside[0].x_mm:.2f}, {outside[0].y_mm:.2f}))" if outside else ""))
     for p in board.pads:
         if p.through_hole:
             check(p.layers == board.copper_layers,
@@ -131,45 +113,63 @@ def check_common(board):
           "every SMD pad has drill == 0")
 
 
-def check_primary(board):
-    check(len(board.pads) > 100, f"pad count {len(board.pads)} > 100")
-    check(len(board.copper_layers) == 4, "Voxy is a 4-layer board")
+def check_parser(board):
+    """The committed KiCad 10 fixture: synthesized net codes from quoted names,
+    an unrotated SMD footprint, a footprint rotated -90, a custom pad, a 4-layer
+    stackup, and an Edge.Cuts outline enclosing every pad. Spot checks are
+    computed BY HAND from the raw file text (see the module docstring)."""
+    check(board.copper_layers == ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+          f"4-layer stackup F.Cu..In1..In2..B.Cu ({board.copper_layers})")
     x0, y0 = board.origin_mm
     w, h = board.size_mm
-    check(abs(x0 - 0.0) < 1e-6 and abs(y0 - -46.99) < 1e-6,
-          f"Edge.Cuts origin ({x0:.3f}, {y0:.3f}) == (0, -46.99)")
-    # Edge.Cuts size is a comparatively stable fact (origin is unchanged at
-    # (0, -46.99)); updated to the current outline. The frozen-fixture decoupling
-    # (docstring NOTE) will eventually own even this, but it holds green today.
-    check(abs(w - 365.629) < 1e-3 and abs(h - 223.630) < 1e-3,
-          f"Edge.Cuts size ({w:.3f}, {h:.3f}) == (365.629, 223.630)")
+    check(abs(x0 - 10.0) < 1e-9 and abs(y0 - -5.0) < 1e-9,
+          f"Edge.Cuts origin ({x0:.3f}, {y0:.3f}) == (10, -5)")
+    check(abs(w - 60.0) < 1e-9 and abs(h - 40.0) < 1e-9,
+          f"Edge.Cuts size ({w:.3f}, {h:.3f}) == (60, 40)")
 
-    # C65's hand-derived pad spot-check (was (242.64/244.54, 22.87)) is SKIPPED,
-    # not re-pointed: the part is currently staged off-board at ~(573, -82.7)
-    # mid-redesign, and chasing that transient position is exactly the treadmill
-    # the frozen fixture will end. The parser's transform math stays covered by
-    # the rotated-footprint 5755 case on the SECOND board and the bench fixtures.
-    print("  SKIP C65 pad hand-check: part staged off-board mid-redesign "
-          "(~573, -82.7) — frozen-fixture decoupling pending")
-    check(len(board.tracks) > 0, f"tracks parsed ({len(board.tracks)})")
-
-
-def check_second(board):
-    check(len(board.copper_layers) == 2, "hifi pre is a 2-layer board")
-    p1 = find_pad(board, 75.890053, 146.512006)
-    check(p1 is not None,
-          "5755 pad 1 (footprint rotated -90) at hand-computed (75.890053, 146.512006)")
+    # C1, unrotated SMD. KiCad 10 has no root net table: the code is synthesized
+    # from the quoted name, so a positive code AND the exact name must survive.
+    p1 = find_pad(board, 29.05, 15.0)
+    check(p1 is not None, "C1 pad 1 found at hand-computed (29.05, 15.0)")
     if p1:
-        check(p1.through_hole and abs(p1.drill_mm - 2.03) < 1e-9,
-              f"5755 pad 1 through-hole, drill {p1.drill_mm} (max of oval 1.02x2.03)")
-        check(p1.layers == board.copper_layers, "5755 pad 1 on all copper layers")
-        check(abs(p1.width_mm - 2.03) < 1e-9 and abs(p1.height_mm - 3.05) < 1e-9,
-              "5755 pad 1 TRUE size 2.03 x 3.05 (file size, not the rotated bbox)")
-        check(abs(p1.rotation_deg - 216) < 1e-9,
-              f"5755 pad 1 rotation {p1.rotation_deg} == 216 (in-file angle, frot folded in)")
-    p4 = find_pad(board, 90.234128, 146.434528)
-    check(p4 is not None,
-          "5755 pad 4 (footprint rotated -90) at hand-computed (90.234128, 146.434528)")
+        check(p1.net_name == "Net-(C1-Pad1)", f"C1 pad 1 quoted net {p1.net_name!r}")
+        check(p1.net_code > 0, "C1 pad 1 has a positive synthesized net code")
+        check(not p1.through_hole and p1.drill_mm == 0.0, "C1 pad 1 is SMD")
+        check(p1.layers == ["F.Cu"], f"C1 pad 1 layers {p1.layers}")
+        check(abs(p1.width_mm - 1.0) < 1e-9 and abs(p1.height_mm - 1.45) < 1e-9,
+              "C1 pad 1 true size 1.0 x 1.45")
+        check(p1.rotation_deg == 0.0, "C1 pad 1 rotation 0 (footprint unrotated)")
+    p2 = find_pad(board, 30.95, 15.0)
+    check(p2 is not None and p2.net_name == "GND",
+          "C1 pad 2 found at (30.95, 15.0) with net GND")
+
+    # V1, footprint rotated -90: (fx - oy, fy + ox); TRUE (pre-rotation) pad
+    # size and the pad's own in-file angle survive.
+    pv = find_pad(board, 42.0, 22.0)
+    check(pv is not None,
+          "V1 pad 1 (footprint rotated -90) at hand-computed (42.0, 22.0)")
+    if pv:
+        check(pv.through_hole and abs(pv.drill_mm - 2.03) < 1e-9,
+              f"V1 pad 1 through-hole, drill {pv.drill_mm} (max of oval 1.02x2.03)")
+        check(pv.layers == board.copper_layers, "V1 pad 1 on all copper layers")
+        check(abs(pv.width_mm - 2.03) < 1e-9 and abs(pv.height_mm - 3.05) < 1e-9,
+              "V1 pad 1 TRUE size 2.03 x 3.05 (file size, not the rotated bbox)")
+        check(abs(pv.rotation_deg - 216) < 1e-9,
+              f"V1 pad 1 rotation {pv.rotation_deg} == 216 (in-file angle, frot folded in)")
+    p4 = find_pad(board, 48.0, 22.0)
+    check(p4 is not None and p4.through_hole,
+          "V1 pad 4 (footprint rotated -90) at hand-computed (48.0, 22.0)")
+
+    # Q1 pad 2 is a `custom` pad: board.py reads its (size 1.475 0.9) ANCHOR
+    # rect, never the larger heat-tab primitive (the custom_pad_refs blind spot).
+    pc = find_pad(board, 20.0, 9.1)
+    check(pc is not None, "Q1 custom pad 2 found at hand-computed (20.0, 9.1)")
+    if pc:
+        check(not pc.through_hole and pc.drill_mm == 0.0, "Q1 pad 2 is SMD")
+        check(abs(pc.width_mm - 1.475) < 1e-9 and abs(pc.height_mm - 0.9) < 1e-9,
+              "Q1 custom pad 2 read as its 1.475 x 0.9 anchor rect, not the primitive")
+
+    check(len(board.tracks) > 0, f"tracks parsed ({len(board.tracks)})")
     check(len(board.vias) > 0, f"vias parsed ({len(board.vias)})")
 
 
@@ -215,19 +215,15 @@ def check_sparkfun(board):
 if __name__ == "__main__":
     checked = 0
 
-    for path, checkers in ((PRIMARY, (check_common, check_primary)),
-                           (SECOND, (check_common, check_second))):
-        if not os.path.exists(path):
-            print(f"\nSKIP {os.path.basename(path)}: fixture absent "
-                  f"(laptop-local amp project — normal on other machines, "
-                  f"see STUDIO.md)")
-            continue
-        brd = load_board(path)
-        summarize(brd)
-        for c in checkers:
-            c(brd)
-        checked += 1
+    # The committed, self-contained fixture (always present).
+    brd = load_board(PARSER)
+    summarize(brd)
+    check_common(brd)
+    check_parser(brd)
+    checked += 1
 
+    # Third-party bench boards (gitignored; skipped on a fresh clone) exercise
+    # the KiCad 5 and KiCad 8 dialects the committed fixture does not.
     for path, checker in ((PICO_VGA, check_pico_vga), (SPARKFUN, check_sparkfun)):
         if not os.path.exists(path):
             print(f"\nSKIP {os.path.basename(path)}: fixture absent "
@@ -239,11 +235,6 @@ if __name__ == "__main__":
         checker(brd)
         checked += 1
 
-    if checked == 0:
-        print("\nRESULT: NO FIXTURES — nothing was checked on this machine. "
-              "Fetch bench boards per bench/boards/SOURCES.md to make this "
-              "suite meaningful here.")
-        raise SystemExit(0)
     print(f"\nRESULT: {'PASS' if not failures else 'FAIL'} "
           f"({checked} fixture{'s' if checked != 1 else ''}, "
           f"{len(failures)} failed check{'s' if len(failures) != 1 else ''})")
