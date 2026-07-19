@@ -893,7 +893,7 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     (the old pitch-is-clearance behavior). track_width_mm overrides the
     project Default class width the ring inflation reads."""
     from board import load_board
-    from lattice import (clearance_map, lattice_for_board,
+    from lattice import (DEFAULT_CLEARANCE_MM, clearance_map, lattice_for_board,
                          pad_overlap_allowances)
 
     t0 = time.perf_counter()
