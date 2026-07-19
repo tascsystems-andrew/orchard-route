@@ -95,6 +95,12 @@ class RouteResult:
                                   # nets, which region this run covers
     net_clearance: dict = None    # net_code -> clearance mm, per net class;
                                   # {} when the board has one clearance
+    terminals: list = None        # (x_mm, y_mm, net_code, size_mm, drill_mm)
+                                  # wire-landing vias of terminal-served nets.
+                                  # HALF-LANDED: the routing side that would
+                                  # populate this isn't wired, so it stays None
+                                  # (writeback reads `res.terminals or []`).
+                                  # Completing it is the terminal-served work.
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -1519,6 +1525,21 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     kwargs.setdefault("allow_diagonals", geo.diagonals_ok)
     if via_exclusion and net_exclusion:
         kwargs.setdefault("net_exclusion", net_exclusion)
+    # Terminal-served nets are HALF-LANDED: writeback forwards these four, but
+    # the routing side (pad->terminal star in route_lattice) is not wired yet.
+    # Consume them here so the CLI still runs, warn if any net was actually
+    # asked to be served by wire, and route everything as ordinary MST. The
+    # emission params (size/drill) are simply dropped since nothing plans a
+    # terminal to emit. Completing this is the queued terminal-served work.
+    _term = {k: kwargs.pop(k) for k in
+             ("terminal_nets", "terminal_cluster_mm",
+              "terminal_size_mm", "terminal_drill_mm") if k in kwargs}
+    if _term.get("terminal_nets"):
+        import warnings
+        warnings.warn(
+            f"--terminal-nets named {len(_term['terminal_nets'])} net(s) but "
+            f"pad->terminal routing is not yet wired — routing them as ordinary "
+            f"MST nets and emitting no wire terminals. (Queued.)", stacklevel=2)
     res = route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
                         clearance=clearance, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
