@@ -133,7 +133,7 @@ def _mst_edges(centers):
     return edges
 
 
-def build_connections(net_pads):
+def build_connections(net_pads, terminal_nets=None):
     """net_pads: net_code -> [(nodes, (x_mm, y_mm)[, group]), ...], one entry
     per pad.
 
@@ -155,7 +155,24 @@ def build_connections(net_pads):
     board region makes each board's share of the net route normally and
     makes the cross-board edge simply never exist. Pads keep ONE arbitration
     across all groups, so a node is still claimed once.
+
+    `terminal_nets` (net_code -> [(nodes, (x_mm, y_mm)), ...], from
+    terminal.plan_terminals) switches a net from a spanning TREE to a STAR:
+    every one of its pads connects to its NEAREST terminal only (Manhattan
+    between pad and terminal centers), and no edge ever runs terminal-to-
+    terminal — the terminals are joined OFF the board by the flying lead the
+    builder solders on. This is the terminal-served / "virtual plane" model:
+    for a 35-pad, 300 mm B+ supply the star is both far less copper and far
+    more routable than the MST, and for a region-spanning net it lets each
+    region's pads home to a local landing instead of dragging copper through
+    the air between boards. Grouping is ignored for a star (each pad simply
+    takes the nearest terminal wherever it is); a terminal net whose entry is
+    an empty list falls back to the normal MST (the walled-off fallback, so a
+    net that could not place a terminal still routes rather than vanishing).
+    Terminals are NOT pads and are not claimed here — the caller reserves them
+    in node_owner (Terminal.claim) before routing.
     """
+    terminal_nets = terminal_nets or {}
     claim = {}
     clashes = {}
     conns = []
@@ -179,6 +196,22 @@ def build_connections(net_pads):
                 claim.setdefault(n, net)
             groups.setdefault(group, []).append(
                 (tuple(int(n) for n in nodes), center))
+        terms = terminal_nets.get(net)
+        if terms:
+            # STAR: each distinct pad -> nearest terminal, no MST, no
+            # terminal-to-terminal copper. Group is irrelevant — a pad homes
+            # to the nearest landing wherever it sits, which for a region-
+            # spanning net naturally keeps each region's pads with the
+            # terminal that clustered from them.
+            tnodes = [tuple(int(n) for n in t[0]) for t in terms]
+            tcx = [t[1][0] for t in terms]
+            tcy = [t[1][1] for t in terms]
+            for group in sorted(groups, key=lambda g: (g is not None, g)):
+                for pad_nodes, (px, py) in groups[group]:
+                    k = min(range(len(terms)),
+                            key=lambda i: abs(tcx[i] - px) + abs(tcy[i] - py))
+                    conns.append(_Conn(net, pad_nodes, tnodes[k]))
+            continue
         for group in sorted(groups, key=lambda g: (g is not None, g)):
             pads = groups[group]
             if len(pads) >= 2:
@@ -312,7 +345,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   refine_passes=2, smooth=True, keeper_patience=3,
                   clique_patience=8, clearance=None, clearance_soft_cost=8.0,
                   via_exclusion_mm=0.0, allow_diagonals=True,
-                  net_exclusion=None):
+                  net_exclusion=None, terminal_nets=None):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -378,14 +411,23 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     resolves both. Nets absent from the map fall back to the scalar
     via_exclusion_mm and no track halo, i.e. the pre-per-class behaviour, so
     None (the default, and what every hand-built test passes) leaves the
-    router bit-identical."""
+    router bit-identical.
+
+    terminal_nets: net_code -> [(nodes, (x_mm, y_mm)), ...], from
+    terminal.plan_terminals — the nets to route as a STAR to wire-landing
+    terminals instead of as a spanning tree (see build_connections). The
+    caller must first reserve each terminal's copper+clearance keep-out in
+    node_owner (Terminal.claim) so the star's endpoints are the net's own
+    reachable copper and foreign nets steer clear. This only changes which
+    edges exist; the negotiation is unchanged. None (the default) routes every
+    net normally."""
     import mlx.core as mx
     import wavefront
 
     sec = {"connect": 0.0, "sssp": 0.0, "backtrace": 0.0,
            "negotiate": 0.0, "emit": 0.0}
     t0 = time.perf_counter()
-    conns, conflicts, claim = build_connections(net_pads)
+    conns, conflicts, claim = build_connections(net_pads, terminal_nets)
     sec["connect"] = time.perf_counter() - t0
 
     N = lat.W * lat.H * lat.L

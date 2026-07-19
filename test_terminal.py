@@ -244,15 +244,18 @@ def test_emit():
 
 
 if __name__ == "__main__":
-    # HALF-LANDED FEATURE — skipped in full, not deleted. Terminal-served nets
-    # need routing-side wiring that never landed: build_connections taking a
-    # terminal argument and route_lattice making pad->terminal STAR edges
-    # instead of one MST. Only the EMISSION side is in (writeback terminal
-    # vias, exercised by test_writeback). Every case here — even the clustering
-    # ones — calls the unwired 2-arg build_connections / terminal route_lattice,
-    # so the file is skipped whole until the routing integration lands (queued
-    # terminal-served / inter-board-terminal work). Re-enable then.
-    print("SKIP  terminal routing not wired into build_connections/route_lattice "
-          "(emission is landed + covered by test_writeback); "
-          "see the terminal-served task")
-    raise SystemExit(0)
+    # Cheap, pure-Python cases first (clustering, star connectivity, planning),
+    # then the ones that spin up the MLX router, then emission (fixture-gated).
+    results = [
+        test_cluster(),
+        test_star_connectivity(),
+        test_single_cluster(),
+        test_determinism(),
+        test_normal_unchanged(),
+        test_plan_and_route(),
+        test_emit(),
+    ]
+    ok = all(results)
+    print(f"\nRESULT: {'PASS' if ok else 'FAIL'}  "
+          f"({sum(1 for r in results if not r)} failed)")
+    raise SystemExit(0 if ok else 1)
