@@ -100,6 +100,22 @@ def single_board():
                        [REGION_A], [p for p in PADS if p[1] < GAP_Y[0]])
 
 
+# Terminal-served variant: HVSHARED (net 4) is a TIGHT 3-pad cluster on each
+# board, so each board collapses to exactly ONE wire landing — unlike SHARED,
+# whose 30 mm-apart pads default-cluster per pad. The boards are ~50 mm apart,
+# far past any cluster threshold, so the two landings never merge across the gap.
+NETS_T = {0: "", 1: "LOCAL_A", 2: "LOCAL_B", 3: "SHARED", 4: "HVSHARED"}
+PADS_T = PADS + [
+    (10.0, 5.0, 4), (12.0, 5.0, 4), (10.0, 7.0, 4),       # region A cluster
+    (10.0, 55.0, 4), (12.0, 55.0, 4), (10.0, 57.0, 4),    # region B cluster
+]
+
+
+def terminal_panel():
+    return write_board(os.path.join(OUT_DIR, "terminal-panel.kicad_pcb"),
+                       [REGION_A, REGION_B], PADS_T, nets=NETS_T)
+
+
 # ── 1. detection ─────────────────────────────────────────────────────────
 def test_regions_are_detected():
     print("=== two disjoint outlines are two boards, not one tall one ===")
@@ -255,9 +271,9 @@ def test_route_board_warns_loudly():
               and "SHARED" in w for w in ws), str(ws))
     check("the warning says they cannot be routed as one board",
           any("cannot be routed as one board" in w for w in ws), str(ws))
-    check("and says what to do instead",
-          any("route regions separately or add a connector" in w for w in ws),
-          str(ws))
+    check("and says what to do instead (including serving by wire)",
+          any("route regions separately, add a connector, or serve them by "
+              "wire" in w for w in ws), str(ws))
     check("it states plainly that no copper crossed",
           any("NO copper was emitted across the gap" in w for w in ws), str(ws))
     check("res.cross_region_nets is machine-readable too",
@@ -312,6 +328,63 @@ def test_region_index_routes_one_board():
               str(e))
 
 
+# ── 4. terminal-served spanning nets (the "virtual plane") ───────────────
+def test_terminal_served_spanning_net_flies_over_the_gap():
+    print("=== a declared net is joined by WIRE, not copper across the gap ===")
+    from pathfinder import route_board
+    lo, hi = GAP_Y
+
+    def crosses(t):     # track (x1, y1, x2, y2) enters the between-boards band
+        return (min(t[1], t[3]) < hi - 1e-9) and (max(t[1], t[3]) > lo + 1e-9)
+
+    # Explicit: serve HVSHARED (net 4) by wire; leave everything else copper.
+    brd, lat, res = route_board(terminal_panel(), pitch_mm=0.6,
+                                layer_names=["F.Cu", "B.Cu"],
+                                terminal_nets=["HVSHARED"],
+                                max_iters=12, refine_passes=0)
+    terms = res.terminals or []
+    hv = [t for t in terms if t[2] == 4]
+    check("HVSHARED got wire-landing terminals", len(hv) >= 2, str(terms))
+    check("its tight per-board clusters collapse to ONE landing each",
+          len(hv) == 2,
+          f"{len(hv)} landings: {[(round(t[0], 1), round(t[1], 1)) for t in hv]}")
+    check("a landing sits on each board (one below the gap, one above)",
+          any(t[1] < lo for t in hv) and any(t[1] > hi for t in hv),
+          str([round(t[1], 1) for t in hv]))
+    check("the terminals carry the wire hole (2.0 mm pad / 1.0 mm drill)",
+          all(abs(t[3] - 2.0) < 1e-9 and abs(t[4] - 1.0) < 1e-9 for t in hv),
+          str([(t[3], t[4]) for t in hv]))
+    check("only the DECLARED net is served (SHARED stays copper)",
+          not any(t[2] == 3 for t in terms), str([t[2] for t in terms]))
+    check("HVSHARED is fully routed — every pad reaches a landing",
+          4 in res.net_paths and 4 not in {n for n, _ in res.failed},
+          str(res.failed))
+    bad = [t for t in (res.tracks or []) if crosses(t)]
+    check("no HVSHARED copper crosses the 25 mm band", not bad,
+          f"{len(bad)} crossing seg(s)")
+    check("the MST->star contract is reported to the user",
+          any("TERMINAL-SERVED net HVSHARED" in w and "star" in w
+              for w in res.region_warnings), str(res.region_warnings))
+
+    # Opt-in auto: every cross-region net is served, no list needed.
+    _b, _l, res2 = route_board(terminal_panel(), pitch_mm=0.6,
+                               layer_names=["F.Cu", "B.Cu"],
+                               terminal_auto_spanning=True,
+                               max_iters=12, refine_passes=0)
+    served = {t[2] for t in (res2.terminals or [])}
+    check("--terminal-auto-spanning serves EVERY spanning net (3 and 4)",
+          served == {3, 4}, str(served))
+
+    # Control: no terminal request -> no terminals, behaviour unchanged.
+    _b3, _l3, res3 = route_board(terminal_panel(), pitch_mm=0.6,
+                                 layer_names=["F.Cu", "B.Cu"],
+                                 max_iters=12, refine_passes=0)
+    check("no terminal request means no terminals and no terminal report",
+          not res3.terminals and not any(
+              "TERMINAL-SERVED" in w for w in (res3.region_warnings or [])),
+          str(res3.terminals))
+
+
 def main():
     shutil.rmtree(OUT_DIR, ignore_errors=True)
     test_regions_are_detected()
@@ -320,6 +393,7 @@ def main():
     test_no_copper_crosses_the_gap()
     test_route_board_warns_loudly()
     test_region_index_routes_one_board()
+    test_terminal_served_spanning_net_flies_over_the_gap()
     print(f"\nRESULT: {'PASS' if not FAILED else 'FAIL ' + str(FAILED)}")
     return 1 if FAILED else 0
 

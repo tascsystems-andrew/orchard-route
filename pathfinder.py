@@ -96,11 +96,11 @@ class RouteResult:
     net_clearance: dict = None    # net_code -> clearance mm, per net class;
                                   # {} when the board has one clearance
     terminals: list = None        # (x_mm, y_mm, net_code, size_mm, drill_mm)
-                                  # wire-landing vias of terminal-served nets.
-                                  # HALF-LANDED: the routing side that would
-                                  # populate this isn't wired, so it stays None
-                                  # (writeback reads `res.terminals or []`).
-                                  # Completing it is the terminal-served work.
+                                  # wire-landing vias of terminal-served nets,
+                                  # one per pad-cluster (terminal.plan_terminals
+                                  # via route_board). None when no net is served.
+                                  # writeback emits these as solderable vias
+                                  # (reads `res.terminals or []`).
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -1345,6 +1345,94 @@ def _apply_fab_outcome(widths, outcome, geo):
     return out
 
 
+def _resolve_terminal_codes(brd, spanning, opts):
+    """The set of net codes to serve by wire, from the caller's declaration.
+
+    `opts["terminal_nets"]` is an iterable of net codes (ints) or net NAMES
+    (strings) — a net is served because the caller SAID so, never a guess.
+    `opts["terminal_auto_spanning"]` additionally folds in every cross-region
+    spanning net (`spanning`): a net whose pads sit on two board regions with
+    no connector between them can only be joined by a flown lead, so on request
+    each region's pads get a local landing and the wire bridges the gap. It is
+    opt-in, not automatic, because the tool must not decide there is no
+    connector — the builder asserts it. Returns a set of codes present on the
+    (possibly region-filtered) board."""
+    on_board = {p.net_code for p in brd.pads}
+    name_to_code = {}
+    for code, name in brd.nets.items():
+        if name:
+            name_to_code.setdefault(str(name), code)
+    codes = set()
+    for item in (opts.get("terminal_nets") or []):
+        if isinstance(item, str):
+            if item in name_to_code:
+                codes.add(name_to_code[item])
+        else:
+            codes.add(int(item))
+    if opts.get("terminal_auto_spanning"):
+        codes.update(spanning)
+    return {c for c in codes if c > 0 and c in on_board}
+
+
+def _plan_board_terminals(brd, lat, node_owner, clearance, net_clearance, geo,
+                          spanning, opts):
+    """Plan wire-landing terminals for the declared terminal-served nets and
+    reserve them in node_owner. Returns (terminal_conn, terminals, report):
+
+      terminal_conn: net_code -> [(nodes, (x, y)), ...] for route_lattice's
+                     star connectivity (empty dict when no net is served);
+      terminals:     [(x_mm, y_mm, net_code, size_mm, drill_mm), ...] for
+                     writeback to emit as solderable vias (RouteResult.terminals);
+      report:        loud human lines — the MST->star contract per served net,
+                     and a warning naming any net that could not place a
+                     terminal (it falls back to a normal route, never dropped).
+
+    node_owner is mutated in place: each placed terminal's copper+clearance
+    keep-out is folded in so the star's endpoints are the net's own reachable
+    copper and foreign nets steer clear (route_lattice requires this)."""
+    import terminal as term_mod
+    codes = _resolve_terminal_codes(brd, spanning, opts)
+    if not codes:
+        return {}, [], []
+
+    def _flt(key):
+        v = opts.get(key)
+        return {} if v is None else {key.split("terminal_", 1)[1]: v}
+
+    kw = {}
+    kw.update(_flt("terminal_cluster_mm"))  # -> cluster_mm
+    kw.update(_flt("terminal_size_mm"))     # -> size_mm
+    kw.update(_flt("terminal_drill_mm"))    # -> drill_mm
+    plan = term_mod.plan_terminals(
+        brd, lat, node_owner, clearance, codes,
+        clearance_by_net=net_clearance or None,
+        track_width_mm=geo.track_width_mm, via_size_mm=geo.via_size_mm,
+        overrides=opts.get("terminal_overrides"), **kw)
+
+    terminal_conn, terminals, report = {}, [], []
+    for code in sorted(plan.terminals):
+        terms = plan.terminals[code]
+        terminal_conn[code] = [(t.nodes, (t.x_mm, t.y_mm)) for t in terms]
+        for t in terms:
+            terminals.append((t.x_mm, t.y_mm, t.net_code, t.size_mm, t.drill_mm))
+            for n in t.claim:                     # reserve the keep-out
+                node_owner.setdefault(n, code)
+        name = brd.nets.get(code, code)
+        mst = plan.single_mst_mm.get(code, 0.0)
+        star = plan.terminal_mm.get(code, 0.0)
+        cut = f", -{(1 - star / mst) * 100:.0f}% copper" if mst > 1e-9 else ""
+        report.append(
+            f"TERMINAL-SERVED net {name}: {len(terms)} wire landing(s) for "
+            f"{plan.pad_counts.get(code, 0)} pad(s); on-board copper "
+            f"{star:.0f} mm (star) vs {mst:.0f} mm (one tree){cut}. The "
+            f"terminals join OFF the board through the soldered lead.")
+    for code, reason in plan.walled_off:
+        report.append(
+            f"WARNING: net {brd.nets.get(code, code)} was asked to be "
+            f"terminal-served but {reason}; routed as an ordinary net instead.")
+    return terminal_conn, terminals, report
+
+
 def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
                 track_width_mm=None, via_size_mm=None, via_exclusion=True,
@@ -1435,6 +1523,15 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     from lattice import board_outline_regions
     panel = board_outline_regions(brd)
     spanning = cross_region_nets(brd, panel)
+    # The terminal-served declaration is read HERE, before the spanning
+    # warning, so the tool never tells the user to "add a connector" for a net
+    # it is about to serve by wire itself — that would be advising one thing
+    # and doing another. _term is reused by the planning block below.
+    _term = {k: kwargs.pop(k) for k in
+             ("terminal_nets", "terminal_auto_spanning", "terminal_cluster_mm",
+              "terminal_size_mm", "terminal_drill_mm", "terminal_overrides")
+             if k in kwargs}
+    served_spanning = _resolve_terminal_codes(brd, spanning, _term) & set(spanning)
     region_warnings = []
     if len(panel) > 1:
         region_warnings.append(
@@ -1448,15 +1545,25 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 for i, r in enumerate(panel))
             + ". Route one board at a time with --region-index N; a score "
               "over the whole panel is a score for no product.")
-    if spanning:
-        named = sorted(str(brd.nets.get(c, c)) for c in spanning)
+    unserved = {c for c in spanning if c not in served_spanning}
+    if unserved:
+        named = sorted(str(brd.nets.get(c, c)) for c in unserved)
         region_warnings.append(
-            f"{len(spanning)} net(s) have pads on more than one board region; "
-            f"they cannot be routed as one board — route regions separately "
-            f"or add a connector. NO copper was emitted across the gap: each "
-            f"region's share of these nets was routed on its own board. "
+            f"{len(unserved)} net(s) have pads on more than one board region; "
+            f"they cannot be routed as one board — route regions separately, "
+            f"add a connector, or serve them by wire (--terminal-auto-spanning)."
+            f" NO copper was emitted across the gap: each region's share of "
+            f"these nets was routed on its own board. "
             f"Nets: " + ", ".join(named[:20])
             + (f", ... (+{len(named) - 20} more)" if len(named) > 20 else ""))
+    if served_spanning:
+        sv = sorted(str(brd.nets.get(c, c)) for c in served_spanning)
+        region_warnings.append(
+            f"{len(served_spanning)} region-spanning net(s) will be SERVED BY "
+            f"WIRE: a solderable terminal on each board, joined off-board by "
+            f"the soldered lead, so no copper crosses the gap. "
+            f"Nets: " + ", ".join(sv[:20])
+            + (f", ... (+{len(sv) - 20} more)" if len(sv) > 20 else ""))
 
     routed_region = None
     if region_index is not None:
@@ -1567,23 +1674,21 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     kwargs.setdefault("allow_diagonals", geo.diagonals_ok)
     if via_exclusion and net_exclusion:
         kwargs.setdefault("net_exclusion", net_exclusion)
-    # Terminal-served nets are HALF-LANDED: writeback forwards these four, but
-    # the routing side (pad->terminal star in route_lattice) is not wired yet.
-    # Consume them here so the CLI still runs, warn if any net was actually
-    # asked to be served by wire, and route everything as ordinary MST. The
-    # emission params (size/drill) are simply dropped since nothing plans a
-    # terminal to emit. Completing this is the queued terminal-served work.
-    _term = {k: kwargs.pop(k) for k in
-             ("terminal_nets", "terminal_cluster_mm",
-              "terminal_size_mm", "terminal_drill_mm") if k in kwargs}
-    if _term.get("terminal_nets"):
-        import warnings
-        warnings.warn(
-            f"--terminal-nets named {len(_term['terminal_nets'])} net(s) but "
-            f"pad->terminal routing is not yet wired — routing them as ordinary "
-            f"MST nets and emitting no wire terminals. (Queued.)", stacklevel=2)
+    # ── terminal-served nets ────────────────────────────────────────────
+    # A declared net (explicit list, or every cross-region spanning net when
+    # --terminal-auto-spanning is asked) is joined by WIRE, not board-spanning
+    # copper: plan_terminals drops a solderable via per pad-cluster, reserves
+    # its keep-out in node_owner, and route_lattice routes each pad to its
+    # nearest landing (a star). The terminals join off the board through the
+    # soldered lead — the "virtual plane" — so no copper crosses the region
+    # gap. _term was popped from kwargs up top (before the spanning warning).
+    terminal_conn, terminals, terminal_report = _plan_board_terminals(
+        brd, lat, node_owner, clearance, net_clearance, geo, spanning, _term)
+    region_warnings += terminal_report
+
     res = route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
-                        clearance=clearance, **kwargs)
+                        clearance=clearance,
+                        terminal_nets=terminal_conn or None, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     res.geometry = geo
     res.geometry_note = geo.summary()
@@ -1600,6 +1705,7 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     res.cross_region_nets = {c: v for c, v in spanning.items()}
     res.region_warnings = region_warnings
     res.net_clearance = net_clearance
+    res.terminals = terminals or None
     return brd, lat, res
 
 
@@ -1668,6 +1774,24 @@ def main(argv=None):
     ap.add_argument("--list-regions", action="store_true",
                     help="print the board's disjoint Edge.Cuts outlines and "
                          "the nets that span them, then exit")
+    ap.add_argument("--terminal-nets", default=None, metavar="NETS",
+                    help="comma-separated net names or codes to serve by WIRE "
+                         "instead of board copper: each pad-cluster gets a "
+                         "solderable via terminal and pads route to the nearest "
+                         "one (a star); the terminals join off-board through "
+                         "the soldered lead. For HV supplies and star grounds.")
+    ap.add_argument("--terminal-auto-spanning", action="store_true",
+                    help="also serve every net whose pads span two board "
+                         "regions with no connector — the flown lead bridges "
+                         "the gap. Opt-in: the tool never assumes there is no "
+                         "connector.")
+    ap.add_argument("--terminal-cluster", type=float, default=None,
+                    metavar="MM", help="Manhattan radius a single terminal "
+                         "serves (default 25 mm); smaller drops more landings")
+    ap.add_argument("--terminal-size", type=float, default=None, metavar="MM",
+                    help="terminal via pad diameter (default 2.0 mm)")
+    ap.add_argument("--terminal-drill", type=float, default=None, metavar="MM",
+                    help="terminal via drill — the wire hole (default 1.0 mm)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
@@ -1699,6 +1823,19 @@ def main(argv=None):
             print(f"  {brd.nets.get(code, code)}: regions {idx}")
         return 0
 
+    terminal_kw = {}
+    if args.terminal_nets:
+        terminal_kw["terminal_nets"] = [s.strip() for s in
+                                        args.terminal_nets.split(",") if s.strip()]
+    if args.terminal_auto_spanning:
+        terminal_kw["terminal_auto_spanning"] = True
+    if args.terminal_cluster is not None:
+        terminal_kw["terminal_cluster_mm"] = args.terminal_cluster
+    if args.terminal_size is not None:
+        terminal_kw["terminal_size_mm"] = args.terminal_size
+    if args.terminal_drill is not None:
+        terminal_kw["terminal_drill_mm"] = args.terminal_drill
+
     try:
         brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                     layer_names=layers,
@@ -1710,7 +1847,8 @@ def main(argv=None):
                                     fab=args.fab, fab_enforce=args.fab_enforce,
                                     region_index=args.region_index,
                                     refine_passes=0 if args.no_refine else 2,
-                                    smooth=not args.no_smooth)
+                                    smooth=not args.no_smooth,
+                                    **terminal_kw)
     except ValueError as e:
         ap.error(str(e))
 
@@ -1742,6 +1880,11 @@ def main(argv=None):
     print(f"overuse     : {res.overuse_curve}")
     print(f"wirelength  : {res.wirelength_mm:.1f} mm")
     print(f"vias        : {res.via_count}")
+    if res.terminals:
+        served = sorted({brd.nets.get(c, c) for _, _, c, _, _ in res.terminals})
+        print(f"terminals   : {len(res.terminals)} wire landing(s) on "
+              f"{len(served)} net(s) ({', '.join(str(s) for s in served[:8])}"
+              f"{', ...' if len(served) > 8 else ''}) — join off-board by lead")
     if "refine_gain_pct" in res.seconds:
         print(f"refine      : path cost -{res.seconds['refine_gain_pct']:.2f}%")
     if res.clearance_stats:
