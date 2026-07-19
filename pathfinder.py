@@ -15,9 +15,12 @@ Choices that matter:
   components would let a ripped connection terminate without joining them.
   With reuse free at the source set, the single shared cost vector needs no
   per-plane own-net exclusion.
-- Hard legality is pad ownership only (node_owner): per-net uint8 masks built
-  lazily and cached, with every plane's own sources/targets force-cleared —
-  a pad can snap inside another pad's claimed rectangle.
+- Hard legality is pad ownership (node_owner) plus, when a lattice.Clearance
+  is supplied, the inflated clearance rings and board-edge band: per-net
+  uint8 masks built lazily and cached, with every plane's own
+  sources/targets force-cleared — a pad can snap inside another pad's
+  claimed rectangle. Ring corridors between pads too close for any legal
+  lane degrade to a static soft price (see route_lattice's `clearance`).
 - If max_iters exhausts with overuse left, a final first-come greedy pass keeps
   one net per contested node and fails the rest: the returned result is always
   legal, never optimistic.
@@ -60,9 +63,11 @@ class RouteResult:
     tracks: list = None # smoothed (x1, y1, x2, y2, layer, net) segments (45s
                         # allowed); None -> consumers use paths_to_tracks
     vias: list = None   # (x_mm, y_mm, net) matching tracks; None as above
+    clearance_stats: dict = None  # ring/edge/degrade counters when a
+                                  # lattice.Clearance was in force; else None
 
 
-@dataclass
+@dataclass(eq=False)  # identity hash: connections are keyed by instance
 class _Conn:
     net: int
     a_nodes: tuple
@@ -154,7 +159,8 @@ def _own_tree_seed(a_nodes, kept_sets):
 def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   hist_weight=0.5, present_factor=1.0, present_growth=1.4,
                   max_iters=40, batch_size=128, max_rounds=100_000,
-                  refine_passes=2, smooth=True, keeper_patience=3):
+                  refine_passes=2, smooth=True, keeper_patience=3,
+                  clique_patience=8, clearance=None, clearance_soft_cost=8.0):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -173,7 +179,23 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     keeper_patience: consecutive overused iterations a node may have the
     SAME keeper net before that keeper yields the node for one round (see
     the alternation comment in the negotiation loop). A huge value
-    effectively disables alternation."""
+    effectively disables alternation.
+
+    clique_patience: iterations a MULTI-PARTY standoff (a connected component
+    of >= 3 nets in the windowed net-conflict graph, every core net in
+    conflict that many iterations running) may persist before its
+    connections are ripped and rerouted SEQUENTIALLY against hard obstacles
+    (_clique_resolve). A huge value disables it.
+
+    clearance: optional lattice.Clearance. Its node_net claims join the
+    per-net hard masks (a node claimed by a FOREIGN net or by -1 is blocked),
+    with three escapes: the net's own ring is free (a), extra_allow grants
+    and Clearance.free_allow punch through (b), and Clearance.soft_allow
+    nodes are passable at clearance_soft_cost each (c) — a STATIC per-node
+    price added to the negotiation cost snapshot and honored by _refine and
+    _clique_resolve, so post-passes cannot silently undo what negotiation
+    paid to respect. None (the default, and what every hand-built test uses)
+    keeps behavior bit-identical to the pre-clearance router."""
     import mlx.core as mx
     import wavefront
 
@@ -194,12 +216,37 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         own_nets = np.fromiter(node_owner.values(), dtype=np.int64, count=len(node_owner))
     else:
         own_nodes = own_nets = np.empty(0, dtype=np.int64)
+    clr_nodes = clr_nets = np.empty(0, dtype=np.int64)
+    soft_np = None
+    if clearance is not None and clearance.node_net:
+        clr_nodes = np.fromiter(clearance.node_net.keys(), dtype=np.int64,
+                                count=len(clearance.node_net))
+        clr_nets = np.fromiter(clearance.node_net.values(), dtype=np.int64,
+                               count=len(clearance.node_net))
+    if clearance is not None and clearance.soft_allow:
+        soft_np = np.zeros(N, dtype=np.float32)
+        for nodes in clearance.soft_allow.values():
+            soft_np[np.fromiter(nodes, dtype=np.int64,
+                                count=len(nodes))] = np.float32(clearance_soft_cost)
     masks = {}
 
     def net_mask(net):
         m = masks.get(net)
         if m is None:
             m = np.zeros(N, dtype=np.uint8)
+            # Layering, weakest first: clearance rings block (own ring and -1
+            # excepted), soft/free allowances re-open their nodes, pad
+            # OWNERSHIP blocks regardless (rings and ownership are disjoint by
+            # construction, but build_connections' snap claims are not), and
+            # extra_allow grants override even ownership (input-board pad
+            # overlaps — the long-standing rule).
+            if clr_nodes.size:
+                m[clr_nodes[clr_nets != net]] = 1
+                for table in (clearance.soft_allow, clearance.free_allow):
+                    opened = table.get(net)
+                    if opened:
+                        m[np.fromiter(opened, dtype=np.int64,
+                                      count=len(opened))] = 0
             if own_nodes.size:
                 m[own_nodes[own_nets != net]] = 1
             grant = (extra_allow or {}).get(net)
@@ -211,6 +258,9 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     hist = np.zeros(N, dtype=np.float32)
     streak = np.zeros(N, dtype=np.int32)  # consecutive iterations overused
     keeper_hold = {}  # node -> (keeper net, consecutive iterations as keeper)
+    conf_streak = {}  # net -> consecutive iterations with any overused node
+    edge_seen = {}    # (net_a, net_b) -> last iteration the pair shared a node
+    seq_fail = {}     # id(conn) -> failures in _clique_resolve (order priority)
     present = float(present_factor)
     overuse_curve = []
     iterations = 0
@@ -227,6 +277,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             nodes = set().union(*sets)
             kept_usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1.0
         cost_np = hist + np.float32(present) * kept_usage
+        if soft_np is not None:
+            cost_np = cost_np + soft_np
         cost_mx = mx.array(cost_np)
 
         ripped = [c for c in conns if c.path is None]
@@ -314,10 +366,11 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         #   purpose: it also undoes a swap that helped nobody, restoring the
         #   symmetric hist-driven escape (see MEANDER in test_pathfinder.py).
         over_nodes = set(np.flatnonzero(over).tolist())
-        keeper = {}
+        tenants = {}
         for net in sorted(nodes_by_net):
             for v in nodes_by_net[net] & over_nodes:
-                keeper.setdefault(v, net)
+                tenants.setdefault(v, []).append(net)
+        keeper = {v: ts[0] for v, ts in tenants.items()}
         prev_hold, keeper_hold, yields = keeper_hold, {}, set()
         for v, net in keeper.items():  # O(overused nodes), like the rest
             pnet, run = prev_hold.get(v, (None, 0))
@@ -326,18 +379,66 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                 yields.add(v)
                 run = 0
             keeper_hold[v] = (net, run)
+        touched = {}  # conn (crossing an overused node) -> pre-rip path length
         for c in conns:
             if c.path is None:
                 continue
             for v in c.path:
                 if v not in over_nodes:
                     continue
+                if c not in touched:
+                    touched[c] = len(c.path)
                 # A yield inverts the roles at v: keeper rips, tenants keep.
                 rips = keeper[v] == c.net if v in yields else keeper[v] != c.net
                 if streak[v] >= 4 or rips:
                     c.path = None
                     c.reason = "ripped on overused nodes"
                     break
+        # Multi-party standoffs outlive every per-NODE escalation above,
+        # because their contested nodes WANDER: with 3+ parties (or one big
+        # net contested at several spots) each rip re-lands one node over, so
+        # keeper_hold and streak reset while the same NETS stay deadlocked
+        # (icebreaker-v1.0e nets 95/96 vs 3: the contested node alternates
+        # between (107,89..92) forever). Track conflicts at NET granularity:
+        # a windowed graph over net pairs that shared an overused node, and
+        # per-net conflict streaks. A connected component whose core (nets in
+        # conflict clique_patience iterations running) has >= 3 nets is a
+        # standoff pairwise role-swaps cannot clear — hand it to
+        # _clique_resolve, which reroutes the involved connections
+        # SEQUENTIALLY under hard obstacles. Two-party deadlocks stay with
+        # keeper alternation. Bookkeeping is O(overused nodes) per iteration;
+        # the resolve itself fires at most once per component per window.
+        confl_nets = set()
+        for ts in tenants.values():
+            confl_nets.update(ts)
+            for i in range(len(ts) - 1):
+                for j in range(i + 1, len(ts)):
+                    edge_seen[(ts[i], ts[j])] = it
+        conf_streak = {n: conf_streak.get(n, 0) + 1 for n in confl_nets}
+        edge_seen = {e: s for e, s in edge_seen.items()
+                     if it - s < clique_patience}
+        if clique_patience <= max_iters:
+            for comp in _components(edge_seen):
+                core = {n for n in comp
+                        if conf_streak.get(n, 0) >= clique_patience}
+                if len(core) < 3:
+                    continue
+                group = [c for c in touched if c.net in core]
+                if not group or len(group) > 24:
+                    continue  # giant tangles are congestion, not a standoff
+                # Self-correcting order: nets hard-blocked in an earlier
+                # resolve go first this time; then most-direct-first.
+                group.sort(key=lambda c: (-seq_fail.get(id(c), 0),
+                                          touched[c], c.net))
+                t0 = time.perf_counter()
+                _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N,
+                                max_rounds, seq_fail, soft_np=soft_np)
+                sec["clique"] = sec.get("clique", 0.0) + \
+                    (time.perf_counter() - t0)
+                for n in core:  # cooldown: re-arm the window from scratch
+                    conf_streak.pop(n, None)
+                edge_seen = {e: s for e, s in edge_seen.items()
+                             if e[0] not in core and e[1] not in core}
         present *= present_growth
         # Windowed, re-armable stall escape: if the best total of the last 8
         # iterations hasn't improved on the 8 before, escalate present hard.
@@ -366,7 +467,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     if refine_passes > 0 and overuse_curve and overuse_curve[-1] == 0:
         t0 = time.perf_counter()
         before, after = _refine(lat, conns, net_mask, rp, ci, wt, N,
-                                refine_passes, batch_size, max_rounds)
+                                refine_passes, batch_size, max_rounds,
+                                soft_np=soft_np)
         sec["refine"] = time.perf_counter() - t0
         sec["refine_gain_pct"] = (100.0 * (before - after) / before
                                   if before > 0 else 0.0)
@@ -378,16 +480,38 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         else:
             failed.append((c.net, c.reason or "never routed"))
 
+    clearance_stats = None
+    if clearance is not None:
+        soft_x = 0
+        for c in conns:
+            if c.path is None:
+                continue
+            opened = clearance.soft_allow.get(c.net)
+            if opened and not opened.isdisjoint(c.path):
+                soft_x += 1
+        clearance_stats = {
+            "claimed_nodes": len(clearance.node_net),
+            "edge_nodes": clearance.edge_nodes,
+            "degraded_pairs": clearance.degraded_pairs,
+            "soft_crossings": soft_x,
+            "inflate_mm": clearance.inflate_mm,
+        }
+
     t0 = time.perf_counter()
     tracks, vias = paths_to_tracks(lat, net_paths)
     sm_tracks = sm_vias = None
     if smooth:
         from smooth import polylines_to_tracks, smooth_net_paths
         # Occupancy: every routed node of every net, plus pad ownership
-        # (node_owner already carries build_connections' claims). Path nodes
-        # overlay pad rectangles so an extra_allow crossing reads as the
-        # crossing net — conservative for the pad's own net near it.
+        # (node_owner already carries build_connections' claims) plus the
+        # clearance rings — a chamfer must not cut a corner INTO a foreign
+        # pad's ring the raw path respected (-1 claims read as foreign to
+        # every net). Path nodes overlay pad rectangles so an extra_allow
+        # crossing reads as the crossing net — conservative for the pad's
+        # own net near it.
         occupied = dict(node_owner)
+        if clearance is not None:
+            occupied.update(clearance.node_net)
         for net, paths in net_paths.items():
             for path in paths:
                 for v in path:
@@ -407,7 +531,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     return RouteResult(net_paths=net_paths, failed=failed, conflicts=conflicts,
                        iterations=iterations, overuse_curve=overuse_curve,
                        wirelength_mm=wirelength, via_count=len(vias), seconds=sec,
-                       tracks=sm_tracks, vias=sm_vias)
+                       tracks=sm_tracks, vias=sm_vias,
+                       clearance_stats=clearance_stats)
 
 
 def _net_stays_connected(net_conns, conn, cand):
@@ -440,11 +565,14 @@ def _net_stays_connected(net_conns, conn, cand):
 
 
 def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
-            max_rounds):
+            max_rounds, soft_np=None):
     """Post-negotiation slack recovery. Reroute every routed connection
     against the FINISHED board — every node of every OTHER net's current path
     a hard obstacle, no hist/present pricing — and adopt a candidate only if
     it is strictly cheaper (backtrace.path_cost, wirelength + via weights).
+    soft_np (clearance soft-degrade prices) IS kept in force: it prices both
+    the search and the adoption comparison, so refine cannot pull a path into
+    a degraded corridor that negotiation paid to stay out of.
 
     Legality is structural here, not negotiated: blocking makes a candidate
     conflict-free against the batch's snapshot. Two planes in one batch can
@@ -457,6 +585,12 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     import mlx.core as mx
     import wavefront
     from backtrace import path_cost
+
+    soft_mx = mx.array(soft_np) if soft_np is not None else None
+
+    def soft_sum(path):
+        return float(soft_np[np.asarray(path, dtype=np.int64)].sum()) \
+            if soft_np is not None else 0.0
 
     def total_cost():
         return sum(path_cost(c.path, lat.row_ptr, lat.col_idx, lat.weight)
@@ -508,7 +642,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
                 targets.append(tgts)
 
             dist, _rounds, converged = wavefront.batched_sssp(
-                rp, ci, wt, N, sources, blocked=mx.array(blk),
+                rp, ci, wt, N, sources, cost=soft_mx, blocked=mx.array(blk),
                 max_rounds=max_rounds)
             if not converged:
                 continue  # best-effort: keep every old path
@@ -524,11 +658,14 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
                     continue
                 try:
                     cand = extract_path(dcol, lat.row_ptr, lat.col_idx,
-                                        lat.weight, target, tol=1e-3 + 1e-6 * td)
+                                        lat.weight, target, tol=1e-3 + 1e-6 * td,
+                                        cost=soft_np)
                 except ValueError:
                     continue
-                new_cost = path_cost(cand, lat.row_ptr, lat.col_idx, lat.weight)
-                old_cost = path_cost(c.path, lat.row_ptr, lat.col_idx, lat.weight)
+                new_cost = path_cost(cand, lat.row_ptr, lat.col_idx,
+                                     lat.weight) + soft_sum(cand)
+                old_cost = path_cost(c.path, lat.row_ptr, lat.col_idx,
+                                     lat.weight) + soft_sum(c.path)
                 if not new_cost < old_cost - 1e-6:
                     continue
                 if any(claimed.get(v, c.net) != c.net for v in cand):
@@ -559,6 +696,103 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
             f"refine broke legality: {over_nodes.size} overused node(s); "
             f"first (node, (x, y, layer), nets): {detail}")
     return cost_before, cost_after
+
+
+def _components(edges):
+    """Connected components over an iterable of (a, b) edges: [set, ...]."""
+    parent = {}
+
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    for a, b in edges:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        parent[find(a)] = find(b)
+    comps = {}
+    for n in parent:
+        comps.setdefault(find(n), set()).add(n)
+    return list(comps.values())
+
+
+def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
+                    seq_fail, soft_np=None):
+    """Break a multi-party standoff by SEQUENTIAL rip-up-and-reroute.
+
+    Rip every connection in `group`, then route them one at a time against
+    the rest of the board as HARD obstacles (same blocking discipline as
+    _refine: every node of every other net's current path blocked, own pad
+    rule only on own nodes) — each adoption immediately an obstacle for the
+    next. Simultaneous negotiation lets 3+ parties yield in circles; here the
+    group lands on a mutually-legal joint configuration in one shot, or a
+    member fails LOUDLY (stays ripped for the normal loop, and its
+    seq_fail[id] bump sends it to the FRONT of the next resolve, so the
+    ordering self-corrects toward constrained-first)."""
+    import mlx.core as mx
+    import wavefront
+
+    soft_mx = mx.array(soft_np) if soft_np is not None else None
+    for c in group:
+        c.path = None
+        c.reason = "ripped for multi-party sequential reroute"
+    by_net = {}
+    for c in conns:
+        if c.path is not None:
+            by_net.setdefault(c.net, []).append(c)
+    used = np.zeros(N, dtype=np.uint8)
+    own_nodes = {}
+    for net, cs in by_net.items():
+        nodes = set().union(*(set(o.path) for o in cs))
+        own_nodes[net] = nodes
+        used[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
+    for c in group:
+        m = net_mask(c.net)
+        col = m | used
+        own = own_nodes.get(c.net, set())
+        if own:
+            idx = np.fromiter(own, dtype=np.int64, count=len(own))
+            col[idx] = m[idx]  # own path nodes: pad rule only
+        # Seed exactly like _refine: own-tree reuse free, but a node a
+        # foreign path occupies can be neither source nor target.
+        kept = [set(o.path) for o in by_net.get(c.net, [])]
+        seed = _own_tree_seed(c.a_nodes, kept)
+        foreign = {int(v) for v in (seed | set(c.b_nodes))
+                   if used[v] and v not in own}
+        seed -= foreign
+        tgts = [int(n) for n in c.b_nodes if int(n) not in foreign]
+        path = None
+        if seed and tgts:
+            col[list(seed | set(tgts))] = 0
+            dist, _rounds, converged = wavefront.batched_sssp(
+                rp, ci, wt, N, [sorted(seed)], cost=soft_mx,
+                blocked=mx.array(col[:, None]), max_rounds=max_rounds)
+            if converged:
+                dcol = np.ascontiguousarray(
+                    np.asarray(dist[:, 0], dtype=np.float64))
+                target = int(tgts[int(np.argmin(dcol[tgts]))])
+                td = float(dcol[target])
+                if np.isfinite(td):
+                    try:
+                        path = extract_path(dcol, lat.row_ptr, lat.col_idx,
+                                            lat.weight, target,
+                                            tol=1e-3 + 1e-6 * td,
+                                            cost=soft_np)
+                    except ValueError:
+                        path = None
+        if path is None:
+            seq_fail[id(c)] = seq_fail.get(id(c), 0) + 1
+            continue
+        c.path = path
+        c.reason = None
+        nodes = set(path)
+        by_net.setdefault(c.net, []).append(c)
+        own_nodes.setdefault(c.net, set()).update(nodes)
+        used[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
 
 
 def _runs(values):
@@ -645,28 +879,43 @@ def net_pads_for_board(board, lat, node_owner=None):
 
 
 def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
-                via_cost=8.0, dir_penalty=1.25, **kwargs):
+                via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
+                track_width_mm=None, **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
 
     directions/via_cost/dir_penalty go to lattice_for_board (board-routing
     defaults: both-direction layers, expensive vias); **kwargs go to
-    route_lattice."""
+    route_lattice.
+
+    clearance_mm: real spacing between routed copper and foreign pads /
+    the board edge (lattice.clearance_map). None -> the project Default
+    class clearance, else 0.2 mm; 0 disables the clearance model entirely
+    (the old pitch-is-clearance behavior). track_width_mm overrides the
+    project Default class width the ring inflation reads."""
     from board import load_board
-    from lattice import lattice_for_board, pad_overlap_allowances
+    from lattice import (clearance_map, lattice_for_board,
+                         pad_overlap_allowances)
 
     t0 = time.perf_counter()
     brd = load_board(board_path)
     t_load = time.perf_counter() - t0
     t0 = time.perf_counter()
-    lat, _pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
-                                                    layer_names=layer_names,
-                                                    directions=directions,
-                                                    via_cost=via_cost,
-                                                    dir_penalty=dir_penalty)
+    lat, pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
+                                                   layer_names=layer_names,
+                                                   directions=directions,
+                                                   via_cost=via_cost,
+                                                   dir_penalty=dir_penalty)
     extra_allow = pad_overlap_allowances(brd, lat)
+    if clearance_mm is None:
+        clearance_mm = DEFAULT_CLEARANCE_MM
+    clearance = clearance_map(brd, lat, node_owner, pad_nodes,
+                              clearance_mm=clearance_mm,
+                              track_width_mm=track_width_mm) \
+        if clearance_mm > 0 else None
     t_lat = time.perf_counter() - t0
     res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
-                        node_owner, extra_allow=extra_allow, **kwargs)
+                        node_owner, extra_allow=extra_allow,
+                        clearance=clearance, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     return brd, lat, res
 
@@ -706,7 +955,7 @@ def main(argv=None):
     ap.add_argument("--no-smooth", action="store_true",
                     help="emit raw 90-degree lattice geometry instead of "
                          "legality-checked 45-degree smoothing")
-    ap.add_argument("--via-cost", type=float, default=8.0,
+    ap.add_argument("--via-cost", type=float, default=12.0,
                     help="lattice via edge cost in grid-step units (default 12)")
     ap.add_argument("--dir-penalty", type=float, default=1.25,
                     help="cost multiplier for a layer's non-preferred direction "
@@ -714,12 +963,16 @@ def main(argv=None):
     ap.add_argument("--directions", choices=("both", "alternating"), default="both",
                     help="both: every layer H+V with preferred-direction pricing; "
                          "alternating: one direction per layer (default both)")
+    ap.add_argument("--clearance", type=float, default=None,
+                    help="copper-to-foreign-pad / board-edge spacing in mm "
+                         "(default 0.2; 0 disables the clearance model)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers,
                                 directions=args.directions, via_cost=args.via_cost,
                                 dir_penalty=args.dir_penalty,
+                                clearance_mm=args.clearance,
                                 refine_passes=0 if args.no_refine else 2,
                                 smooth=not args.no_smooth)
 
@@ -739,6 +992,13 @@ def main(argv=None):
     print(f"vias        : {res.via_count}")
     if "refine_gain_pct" in res.seconds:
         print(f"refine      : path cost -{res.seconds['refine_gain_pct']:.2f}%")
+    if res.clearance_stats:
+        cs = res.clearance_stats
+        print(f"clearance   : inflate {cs['inflate_mm']:.3f} mm | "
+              f"{cs['claimed_nodes']} ring/edge nodes "
+              f"({cs['edge_nodes']} edge) | "
+              f"{cs['degraded_pairs']} pad pairs degraded to soft | "
+              f"{cs['soft_crossings']} connections cross soft nodes")
     print("seconds     : " + " | ".join(f"{k} {v:.2f}" for k, v in res.seconds.items()
                                         if not k.endswith("_pct")))
     for net, reason in res.failed[:10]:

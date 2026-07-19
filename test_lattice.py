@@ -3,12 +3,13 @@
 Run: .venv/bin/python test_lattice.py
 The board test self-skips if board.py (being written concurrently) is absent.
 """
+import math
 import os
 import time
 
 import numpy as np
 
-from lattice import build_lattice, lattice_for_board
+from lattice import build_lattice, clearance_map, lattice_for_board, pad_ring_nodes
 
 VOXY = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
 
@@ -165,6 +166,142 @@ def test_gpu_smoke():
     print(f"gpu smoke: PASS  (dist={d}, expected={expected}, rounds={rounds})")
 
 
+def _fixture_board():
+    """Synthetic in-memory Board exercising every clearance_map rule."""
+    from board import Board, Pad
+
+    def pad(x, y, w, h, net, rot=0.0, layers=("F.Cu",)):
+        return Pad(x, y, list(layers), net, f"N{net}", w, h, False, 0.0, rot)
+
+    pads = [
+        pad(5.0, 8.0, 1.6, 1.1, 1),         # A: isolated, axis-aligned
+        pad(15.0, 8.0, 1.6, 1.1, 2),        # B: isolated, far from A
+        pad(5.0, 12.0, 0.8, 0.8, 3),        # D ┐ gap 0.2 mm < 2*inflate:
+        pad(6.0, 12.0, 0.8, 0.8, 4),        # E ┘ the degraded pair
+        pad(12.0, 12.0, 1.6, 1.1, 5),       # F ┐ true copper overlap:
+        pad(12.0, 12.2, 0.8, 0.8, 6),       # G ┘ the free-allow pair
+        pad(10.0, 4.2, 1.0, 1.0, 0),        # H: unconnected copper -> -1 ring
+                                            # (rect off-grid so ring nodes exist:
+                                            # an aligned 1.0 pad on the 0.5 grid
+                                            # has NO node within 0.325 of it)
+        pad(16.0, 4.0, 0.8, 0.8, 7),        # I ┐ same net, gap 0.2: never
+        pad(17.0, 4.0, 0.8, 0.8, 7),        # J ┘ degraded, never -1
+        pad(16.0, 12.0, 1.6, 0.8, 8, rot=30.0),  # R: rotated ring audit
+    ]
+    return Board(path="/nonexistent/clearance-fixture.kicad_pcb",
+                 origin_mm=(0.0, 0.0), size_mm=(20.0, 16.0),
+                 copper_layers=["F.Cu", "B.Cu"],
+                 nets={i: f"N{i}" for i in range(9)},
+                 pads=pads, tracks=[], vias=[])
+
+
+def _pad_dist(pad, x, y):
+    """Independent point-to-rotated-rect distance (mm): corners from the
+    hand-derived KiCad rotation (CCW, Y-down — test_board.py's convention),
+    inside via cross-product signs, outside via point-segment distance."""
+    t = math.radians(pad.rotation_deg)
+    c, s = math.cos(t), math.sin(t)
+    hw, hh = pad.width_mm / 2, pad.height_mm / 2
+    cs = [(pad.x_mm + lx * c + ly * s, pad.y_mm - lx * s + ly * c)
+          for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
+    signs = []
+    for i in range(4):
+        ax, ay = cs[i]
+        bx, by = cs[(i + 1) % 4]
+        signs.append((bx - ax) * (y - ay) - (by - ay) * (x - ax))
+    if all(v >= -1e-12 for v in signs) or all(v <= 1e-12 for v in signs):
+        return 0.0
+    best = float("inf")
+    for i in range(4):
+        ax, ay = cs[i]
+        bx, by = cs[(i + 1) % 4]
+        vx, vy = bx - ax, by - ay
+        u = max(0.0, min(1.0, ((x - ax) * vx + (y - ay) * vy) /
+                         (vx * vx + vy * vy)))
+        best = min(best, math.hypot(x - (ax + u * vx), y - (ay + u * vy)))
+    return best
+
+
+def test_clearance_map():
+    brd = _fixture_board()
+    lat, pad_nodes, node_owner = lattice_for_board(
+        brd, pitch_mm=0.5, layer_names=["F.Cu", "B.Cu"])
+    clr = clearance_map(brd, lat, node_owner, pad_nodes)
+    # no .kicad_pro exists -> DEFAULT_TRACK_WIDTH_MM 0.25 -> 0.2 + 0.125
+    inflate = clr.inflate_mm
+    assert abs(inflate - 0.325) < 1e-9, inflate
+
+    # Rings and ownership are disjoint; no ring node claims its own interior.
+    assert not set(clr.node_net) & set(node_owner)
+
+    # Ring audit, brute force, on the axis-aligned isolated pad A and the
+    # rotated pad R: every F.Cu node strictly outside the rect but within
+    # inflate — and not pad-owned — must be in pad_ring_nodes, none other.
+    for pad in (brd.pads[0], brd.pads[9]):
+        got = set(pad_ring_nodes(lat, pad, "F.Cu", inflate))
+        expect = set()
+        for iy in range(lat.H):
+            for ix in range(lat.W):
+                x = lat.origin_mm[0] + ix * lat.pitch_mm
+                y = lat.origin_mm[1] + iy * lat.pitch_mm
+                d = _pad_dist(pad, x, y)
+                if 1e-6 < d <= inflate - 1e-6:
+                    expect.add(lat.node(ix, iy, 0))
+        # brute force skips the +/-1e-6 boundary shell on purpose: geometry
+        # in the fixture keeps node distances off the exact boundary.
+        assert expect <= got, sorted(got.symmetric_difference(expect))[:8]
+        for n in got - expect:
+            ix, iy, _ = lat.coords(n)
+            d = _pad_dist(pad, lat.origin_mm[0] + ix * lat.pitch_mm,
+                          lat.origin_mm[1] + iy * lat.pitch_mm)
+            assert 0.0 < d <= inflate + 1e-6, (lat.coords(n), d)
+        # ... and A's unowned ring nodes actually claim net 1 (or -1 where a
+        # neighbor also reaches — none exists for A).
+        if pad is brd.pads[0]:
+            for n in got:
+                if n not in node_owner:
+                    assert clr.node_net.get(n) == 1, (lat.coords(n),
+                                                      clr.node_net.get(n))
+
+    # Degraded pair D/E (nets 3/4, gap 0.2 < 2*inflate, no overlap): both
+    # nets get the SAME soft corridor, the corridor is claimed -1 (both
+    # rings), and the pair is counted.
+    assert clr.degraded_pairs >= 1
+    assert clr.soft_allow.get(3) and clr.soft_allow.get(3) == clr.soft_allow.get(4)
+    for n in clr.soft_allow[3]:
+        assert clr.node_net.get(n) == -1, (lat.coords(n), clr.node_net.get(n))
+    corridor_node = lat.snap(5.5, 12.0, "F.Cu")   # midway between D and E
+    assert corridor_node in clr.soft_allow[3]
+
+    # Overlap pair F/G (nets 5/6): free passage through both rings, no
+    # degrade count, no soft price.
+    assert clr.free_allow.get(5) and clr.free_allow.get(6)
+    assert 5 not in clr.soft_allow and 6 not in clr.soft_allow
+
+    # Unconnected pad H (net 0): ring claimed -1, hard for everyone.
+    n_h = lat.snap(10.0, 5.0, "F.Cu")             # 0.3 below H's rect edge
+    assert clr.node_net.get(n_h) == -1
+
+    # Same-net pair I/J (net 7 twice, gap 0.2): their shared corridor keeps
+    # the plain net-7 claim — never -1, never degraded.
+    n_ij = lat.snap(16.5, 4.0, "F.Cu")
+    assert clr.node_net.get(n_ij) == 7
+    assert 7 not in clr.soft_allow
+
+    # Board edge: the bbox boundary and the margin beyond are -1 on every
+    # layer; the first interior node past the band is unclaimed.
+    for il, ln in enumerate(lat.layer_names):
+        assert clr.node_net.get(lat.snap(0.0, 8.0, ln)) == -1     # on the edge
+        assert clr.node_net.get(lat.snap(-1.0, 8.0, ln)) == -1    # margin
+        assert lat.snap(1.0, 8.0, ln) not in clr.node_net         # d=1.0 > inflate
+    assert clr.edge_nodes > 0
+
+    print(f"clearance map: PASS  inflate={inflate} mm  "
+          f"{len(clr.node_net)} claimed nodes ({clr.edge_nodes} edge)  "
+          f"degraded_pairs={clr.degraded_pairs}  "
+          f"corridor={sorted(lat.coords(n) for n in clr.soft_allow[3])}")
+
+
 def test_board():
     try:
         from board import load_board
@@ -194,4 +331,5 @@ if __name__ == "__main__":
     test_build_speed()
     test_gpu_smoke()
     test_gpu_smoke_both()
+    test_clearance_map()
     test_board()

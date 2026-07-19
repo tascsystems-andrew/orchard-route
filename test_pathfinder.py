@@ -232,9 +232,125 @@ def test_asym_yield():
     return ok
 
 
+def test_multiparty():
+    """The MULTI-PARTY standoff (icebreaker-v1.0e nets 95/96 vs net 3): two
+    nets each deadlocked against the SAME bigger net, so pairwise role swaps
+    cycle without global progress. Wall on x=10, open only y=8..12. Pen net 1
+    pads sit ON the wall at (10,8)/(10,12): its straight route needs ALL of
+    (10,9..11). Crosser net 2 (4,9)->(19,10) can cross only at (10,9)/(10,10);
+    crosser net 3 (4,10)->(19,11) only at (10,10)/(10,11). The only crossing
+    of rows 9-11 clear of the crossers' spans is the west strip x<=3 — a +14
+    detour the pen must take, but as the keeper at every contested node it
+    never re-evaluates: yields at one node just move the conflict to the
+    neighbor (the contested set WANDERS, so per-node keeper_hold and streak
+    never mature), and the streak>=4 full rip co-rips everyone into an
+    identical re-collision. hist_weight 0 / constant present mirror the
+    boards, where every alternative is priced out (see ASYM-YIELD). Only the
+    net-level clique detection sees the 3-party component and hands it to
+    _clique_resolve: firing 1 (pen first, most direct) hard-blocks both
+    crossers, whose seq_fail bump puts them FIRST at firing 2 — crossers take
+    (10,9)/(10,10), the pen is forced onto the detour, overuse hits 0."""
+    blocked = frozenset(y * W + 10 for y in range(H) if not (8 <= y <= 12))
+    kw = dict(hist_weight=0.0, present_factor=3.0, present_growth=1.0)
+    lat = build_lattice(W, H, 1, blocked=blocked, directions="both")
+    net_pads = {
+        1: [_pad(lat, 10, 8), _pad(lat, 10, 12)],
+        2: [_pad(lat, 4, 9), _pad(lat, 19, 10)],
+        3: [_pad(lat, 4, 10), _pad(lat, 19, 11)],
+    }
+    # Premise, fix disabled: overuse pins at a small constant to the
+    # iteration cap and BOTH crossers fail contested with the pen.
+    res_off = route_lattice(lat, net_pads, clique_patience=10**9, **kw)
+    pinned = (res_off.iterations == 40
+              and all(v > 0 for v in res_off.overuse_curve))
+    sig = (sorted(n for n, _ in res_off.failed) == [2, 3]
+           and all("congestion unresolved" in r and "contested with net 1" in r
+                   for _, r in res_off.failed))
+    # Fix, default clique_patience: resolved well under the cap, pen detours.
+    res_on = route_lattice(lat, net_pads, **kw)
+    n1 = _net_nodes(res_on, 1)
+    cross2 = {lat.coords(v) for v in _net_nodes(res_on, 2)
+              if lat.coords(v)[0] == 10}
+    cross3 = {lat.coords(v) for v in _net_nodes(res_on, 3)
+              if lat.coords(v)[0] == 10}
+    ok = (pinned and sig
+          and not res_on.failed and res_on.overuse_curve[-1] == 0
+          and res_on.iterations < 40
+          and cross2 and cross3 and not (cross2 & cross3)
+          and not (n1 & (_net_nodes(res_on, 2) | _net_nodes(res_on, 3))))
+    print(f"MULTIPARTY : {'PASS' if ok else 'FAIL'}  "
+          f"no-fix iters={res_off.iterations}  "
+          f"curve={res_off.overuse_curve}  failed={res_off.failed}")
+    print(f"             fix iters={res_on.iterations}  "
+          f"curve={res_on.overuse_curve}  crossings net2={sorted(cross2)} "
+          f"net3={sorted(cross3)}  failed={res_on.failed}")
+    return ok
+
+
+def test_clearance():
+    """The clearance structure end-to-end on a hand lattice (20x20x1, both):
+    (1) a foreign ring blob detours the net that doesn't own it and is
+    transparent to the net that does; (2) a full -1 ring wall with BOTH a free
+    gap and a nearer soft corridor: the soft price must steer the route to the
+    free gap (and refine, which prices soft too, must not pull it back);
+    (3) with only the soft corridor, the net crosses it and the crossing is
+    counted; (4) with no opening at all the wall is hard: target unreachable."""
+    from lattice import Clearance
+
+    lat = build_lattice(W, H, 1, directions="both")
+    row10 = {1: [_pad(lat, 0, 10), _pad(lat, 19, 10)]}
+
+    # (1) foreign blob at x=10, y=8..12 claimed by net 2.
+    blob = {lat.node(10, y, 0): 2 for y in range(8, 13)}
+    res_f = route_lattice(lat, row10, clearance=Clearance(node_net=dict(blob)))
+    n1 = _net_nodes(res_f, 1)
+    detoured = not res_f.failed and not (n1 & set(blob))
+    res_o = route_lattice(lat, {2: [_pad(lat, 0, 10), _pad(lat, 19, 10)]},
+                          clearance=Clearance(node_net=dict(blob)))
+    straight = not res_o.failed and lat.node(10, 10, 0) in _net_nodes(res_o, 2)
+    ok1 = (detoured and straight
+           and res_f.clearance_stats["soft_crossings"] == 0)
+
+    # (2)/(3)/(4) the wall. Free gap y=15 (detour 10 penalized steps), soft
+    # corridor y=8 (detour 4): without the soft price y=8 wins, with a fat
+    # price (20) the free gap must win.
+    wall = {lat.node(10, y, 0): -1 for y in range(H)}
+    wall_gap = {n: c for n, c in wall.items() if n != lat.node(10, 15, 0)}
+    soft = {1: {lat.node(10, 8, 0)}}
+    res_g = route_lattice(lat, row10, clearance=Clearance(
+        node_net=wall_gap, soft_allow={1: set(soft[1])}),
+        clearance_soft_cost=20.0)
+    cross_g = {lat.coords(v) for v in _net_nodes(res_g, 1)
+               if lat.coords(v)[0] == 10}
+    ok2 = (not res_g.failed and cross_g == {(10, 15, 0)}
+           and res_g.clearance_stats["soft_crossings"] == 0)
+
+    res_s = route_lattice(lat, row10, clearance=Clearance(
+        node_net=dict(wall), soft_allow={1: set(soft[1])}),
+        clearance_soft_cost=20.0)
+    cross_s = {lat.coords(v) for v in _net_nodes(res_s, 1)
+               if lat.coords(v)[0] == 10}
+    ok3 = (not res_s.failed and cross_s == {(10, 8, 0)}
+           and res_s.clearance_stats["soft_crossings"] == 1)
+
+    res_w = route_lattice(lat, row10, clearance=Clearance(node_net=dict(wall)))
+    ok4 = (len(res_w.failed) == 1
+           and "target unreachable" in res_w.failed[0][1])
+
+    ok = ok1 and ok2 and ok3 and ok4
+    print(f"CLEARANCE  : {'PASS' if ok else 'FAIL'}  "
+          f"blob detour={detoured} own-ring straight={straight}  "
+          f"gap-vs-soft crossing={sorted(cross_g)}  "
+          f"soft-only crossing={sorted(cross_s)} "
+          f"(counted={res_s.clearance_stats['soft_crossings']})  "
+          f"walled failed={res_w.failed}")
+    return ok
+
+
 if __name__ == "__main__":
     results = [test_cross(), test_corridor(), test_starvation(), test_tree(),
-               test_eqdelta(), test_meander(), test_asym_yield()]
+               test_eqdelta(), test_meander(), test_asym_yield(),
+               test_multiparty(), test_clearance()]
     print(f"RESULT: {'PASS' if all(results) else 'FAIL'} "
           f"({sum(results)}/{len(results)})")
     raise SystemExit(0 if all(results) else 1)
