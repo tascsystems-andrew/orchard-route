@@ -1355,23 +1355,28 @@ def _resolve_terminal_codes(brd, spanning, opts):
     no connector between them can only be joined by a flown lead, so on request
     each region's pads get a local landing and the wire bridges the gap. It is
     opt-in, not automatic, because the tool must not decide there is no
-    connector — the builder asserts it. Returns a set of codes present on the
-    (possibly region-filtered) board."""
+    connector — the builder asserts it. Returns (codes, unresolved): codes is
+    the set present on the (possibly region-filtered) board; unresolved lists
+    any EXPLICITLY named item that did not resolve to a net with pads here — a
+    typo or wrong code the caller must hear about, not have silently dropped."""
     on_board = {p.net_code for p in brd.pads}
     name_to_code = {}
     for code, name in brd.nets.items():
         if name:
             name_to_code.setdefault(str(name), code)
-    codes = set()
+    codes, unresolved = set(), []
     for item in (opts.get("terminal_nets") or []):
         if isinstance(item, str):
-            if item in name_to_code:
-                codes.add(name_to_code[item])
+            c = name_to_code.get(item)
         else:
-            codes.add(int(item))
+            c = int(item)
+        if c is not None and c > 0 and c in on_board:
+            codes.add(c)
+        else:
+            unresolved.append(item)   # typo'd name / no pads / not a real net
     if opts.get("terminal_auto_spanning"):
-        codes.update(spanning)
-    return {c for c in codes if c > 0 and c in on_board}
+        codes.update(c for c in spanning if c > 0 and c in on_board)
+    return codes, unresolved
 
 
 def _plan_board_terminals(brd, lat, node_owner, clearance, net_clearance, geo,
@@ -1391,9 +1396,15 @@ def _plan_board_terminals(brd, lat, node_owner, clearance, net_clearance, geo,
     keep-out is folded in so the star's endpoints are the net's own reachable
     copper and foreign nets steer clear (route_lattice requires this)."""
     import terminal as term_mod
-    codes = _resolve_terminal_codes(brd, spanning, opts)
+    codes, unresolved = _resolve_terminal_codes(brd, spanning, opts)
+    warn = []
+    if unresolved:
+        warn.append(
+            f"WARNING: --terminal-nets named {len(unresolved)} item(s) that "
+            f"are not a net with pads on this board and were IGNORED: "
+            + ", ".join(str(u) for u in unresolved))
     if not codes:
-        return {}, [], []
+        return {}, [], warn
 
     def _flt(key):
         v = opts.get(key)
@@ -1409,7 +1420,7 @@ def _plan_board_terminals(brd, lat, node_owner, clearance, net_clearance, geo,
         track_width_mm=geo.track_width_mm, via_size_mm=geo.via_size_mm,
         overrides=opts.get("terminal_overrides"), **kw)
 
-    terminal_conn, terminals, report = {}, [], []
+    terminal_conn, terminals, report = {}, [], list(warn)
     for code in sorted(plan.terminals):
         terms = plan.terminals[code]
         terminal_conn[code] = [(t.nodes, (t.x_mm, t.y_mm)) for t in terms]
@@ -1531,7 +1542,7 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
              ("terminal_nets", "terminal_auto_spanning", "terminal_cluster_mm",
               "terminal_size_mm", "terminal_drill_mm", "terminal_overrides")
              if k in kwargs}
-    served_spanning = _resolve_terminal_codes(brd, spanning, _term) & set(spanning)
+    served_spanning = _resolve_terminal_codes(brd, spanning, _term)[0] & set(spanning)
     region_warnings = []
     if len(panel) > 1:
         region_warnings.append(

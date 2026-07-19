@@ -384,6 +384,17 @@ def test_terminal_served_spanning_net_flies_over_the_gap():
               "TERMINAL-SERVED" in w for w in (res3.region_warnings or [])),
           str(res3.terminals))
 
+    # Say/do: a typo'd or non-existent net name is NOT silently dropped.
+    _b4, _l4, res4 = route_board(terminal_panel(), pitch_mm=0.6,
+                                 layer_names=["F.Cu", "B.Cu"],
+                                 terminal_nets=["HVSHARED", "NOSUCHNET"],
+                                 max_iters=12, refine_passes=0)
+    check("a bogus terminal net name is reported, not swallowed",
+          any("NOSUCHNET" in w and "IGNORED" in w
+              for w in (res4.region_warnings or [])), str(res4.region_warnings))
+    check("and the real one is still served alongside it",
+          {t[2] for t in (res4.terminals or [])} == {4}, str(res4.terminals))
+
 
 def main():
     shutil.rmtree(OUT_DIR, ignore_errors=True)
