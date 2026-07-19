@@ -41,7 +41,9 @@ Choices that matter:
 CLI: python pathfinder.py BOARD.kicad_pcb [--pitch 1.0] [--layers F.Cu,B.Cu]
      [--svg out.svg] [--no-refine] [--no-smooth]
 """
+import dataclasses
 import math
+import os
 import time
 from dataclasses import dataclass
 
@@ -85,6 +87,14 @@ class RouteResult:
                                   # modelled. Emit this, unchanged.
     emit_defaults: tuple = None   # (track, via, drill) scalars for any net
                                   # net_widths does not name
+    regions: tuple = ()           # board.OutlineRegion per disjoint outline
+    region_index: int = None      # the one region routed, or None for all
+    cross_region_nets: dict = None  # net_code -> [region indices], for nets
+                                  # whose pads span physically separate boards
+    region_warnings: list = None  # loud strings: the panel, the spanning
+                                  # nets, which region this run covers
+    net_clearance: dict = None    # net_code -> clearance mm, per net class;
+                                  # {} when the board has one clearance
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -118,7 +128,8 @@ def _mst_edges(centers):
 
 
 def build_connections(net_pads):
-    """net_pads: net_code -> [(nodes, (x_mm, y_mm)), ...], one entry per pad.
+    """net_pads: net_code -> [(nodes, (x_mm, y_mm)[, group]), ...], one entry
+    per pad.
 
     A through-hole pad's `nodes` is its snapped node on every lattice layer;
     an SMD pad's is a single node. Returns (connections, conflicts, claim):
@@ -128,6 +139,16 @@ def build_connections(net_pads):
     (its connections never form) and reported in conflicts as
     (node, [net_codes]). `claim` (node -> net, lowest net wins) is THE pad
     arbitration — callers must not let a second rule disagree with it.
+
+    The optional third element is a pad GROUP, and the MST is built per
+    (net, group) rather than per net. It exists for panels: a file holding
+    several disjoint board outlines routinely repeats a net name on more
+    than one of them (GND, +5V), and those are different physical nets that
+    happen to share a name. One MST over all their pads emits an edge across
+    the empty space between two boards — copper through air. Grouping by
+    board region makes each board's share of the net route normally and
+    makes the cross-board edge simply never exist. Pads keep ONE arbitration
+    across all groups, so a node is still claimed once.
     """
     claim = {}
     clashes = {}
@@ -135,8 +156,10 @@ def build_connections(net_pads):
     for net in sorted(net_pads):
         if net <= 0:
             continue
-        pads, seen = [], set()
-        for nodes, center in net_pads[net]:
+        groups, seen = {}, set()
+        for entry in net_pads[net]:
+            nodes, center = entry[0], entry[1]
+            group = entry[2] if len(entry) > 2 else 0
             key = frozenset(nodes)
             if key in seen:
                 continue
@@ -148,10 +171,13 @@ def build_connections(net_pads):
             seen.add(key)
             for n in nodes:
                 claim.setdefault(n, net)
-            pads.append((tuple(int(n) for n in nodes), center))
-        if len(pads) >= 2:
-            for i, j in _mst_edges([c for _, c in pads]):
-                conns.append(_Conn(net, pads[i][0], pads[j][0]))
+            groups.setdefault(group, []).append(
+                (tuple(int(n) for n in nodes), center))
+        for group in sorted(groups, key=lambda g: (g is not None, g)):
+            pads = groups[group]
+            if len(pads) >= 2:
+                for i, j in _mst_edges([c for _, c in pads]):
+                    conns.append(_Conn(net, pads[i][0], pads[j][0]))
     conflicts = [(n, nets) for n, nets in sorted(clashes.items())]
     return conns, conflicts, claim
 
@@ -174,12 +200,41 @@ def _via_halo(lat, via_exclusion_mm):
     return offs if len(offs) > 1 else None
 
 
-def _footprint(lat, path, halo, exempt=frozenset()):
+def _track_halo(lat, track_exclusion_mm):
+    """Planar node offsets a TRACK claims around every node it occupies, or
+    None when the claim is just the node itself.
+
+    Same shape as _via_halo, one dimension smaller in effect: a track lives
+    on ONE layer, so its claim stays on that layer, while a via's barrel
+    punches through all of them. The radius is the net class's
+    geometry.NetClass.track_exclusion_mm = clearance + track_width/2 — the
+    moving twin of lattice.pad_ring_nodes' static inflate around a pad.
+
+    This is what makes a per-net-class clearance real rather than declared.
+    The old model gave every track exactly one node and one global ring, so a
+    net class asking 1.0 mm of creepage was spaced exactly like a 0.15 mm
+    logic net and the run printed VIOLATED while emitting the copper anyway.
+    With this, a 1.0 mm class sterilises a wider neighbourhood than a 0.15 mm
+    one and the EXISTING capacity-1 negotiation enforces it — no new kernel
+    concept, the same accounting that already prices via halos.
+
+    Note the threshold: a radius below the pitch claims nothing beyond the
+    node the track is already on, so on boards where every class fits its
+    grid this returns None for every net and the router is bit-identical to
+    the pre-per-class one. The claim appears exactly when a class asks for
+    more spacing than one grid step provides.
+    """
+    return _via_halo(lat, track_exclusion_mm)
+
+
+def _footprint(lat, path, halo, exempt=frozenset(), track_halo=None):
     """The nodes a path OCCUPIES for conflict accounting: its own nodes, plus
     (when halo is on) every halo node on every layer around each of its
-    layer changes. Deliberately NOT the same thing as the path: own-tree
-    seeding and _net_stays_connected reason about the path proper, because a
-    connection may only terminate on real copper, never on a halo node.
+    layer changes, plus (when track_halo is on) every same-layer halo node
+    around EVERY node of the path. Deliberately NOT the same thing as the
+    path: own-tree seeding and _net_stays_connected reason about the path
+    proper, because a connection may only terminate on real copper, never on
+    a halo node.
 
     `exempt` is the PAD node set, and it is a deliberate scope line rather
     than an optimization. A pad cannot move. If a via's halo could claim a
@@ -190,22 +245,35 @@ def _footprint(lat, path, halo, exempt=frozenset()):
     its inflate is clearance + track_width/2, which under-serves a via by
     (via_size - track_width)/2 — a stated residual, not a silent one. The
     halo's remit is via-vs-ROUTED-copper, which is where the measured gap is.
+    The same exemption and the same reasoning apply to the track halo.
     """
     nodes = set(path)
-    if not halo:
+    if not halo and not track_halo:
         return nodes
     W, H, L = lat.W, lat.H, lat.L
     plane = W * H
-    for a, b in zip(path, path[1:]):
-        ax, ay, al = lat.coords(a)
-        if al == lat.coords(b)[2]:
-            continue
-        for dx, dy in halo:
-            x, y = ax + dx, ay + dy
-            if 0 <= x < W and 0 <= y < H:
-                base = y * W + x
-                for il in range(L):
-                    nd = il * plane + base
+    if halo:
+        for a, b in zip(path, path[1:]):
+            ax, ay, al = lat.coords(a)
+            if al == lat.coords(b)[2]:
+                continue
+            for dx, dy in halo:
+                x, y = ax + dx, ay + dy
+                if 0 <= x < W and 0 <= y < H:
+                    base = y * W + x
+                    for il in range(L):
+                        nd = il * plane + base
+                        if nd not in exempt:
+                            nodes.add(nd)
+    if track_halo:
+        # Same layer only: a track's copper is on the layer it is drawn on.
+        for n in path:
+            ax, ay, al = lat.coords(n)
+            base_l = al * plane
+            for dx, dy in track_halo:
+                x, y = ax + dx, ay + dy
+                if 0 <= x < W and 0 <= y < H:
+                    nd = base_l + y * W + x
                     if nd not in exempt:
                         nodes.add(nd)
     nodes.update(path)     # a path's own nodes are never exempt
@@ -237,7 +305,8 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                   max_iters=40, batch_size=128, max_rounds=100_000,
                   refine_passes=2, smooth=True, keeper_patience=3,
                   clique_patience=8, clearance=None, clearance_soft_cost=8.0,
-                  via_exclusion_mm=0.0, allow_diagonals=True):
+                  via_exclusion_mm=0.0, allow_diagonals=True,
+                  net_exclusion=None):
     """Negotiation loop over a built Lattice. net_pads as in build_connections.
 
     extra_allow (net -> node ids, lattice.pad_overlap_allowances) punches
@@ -292,7 +361,18 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
 
     allow_diagonals: passed to smooth.smooth_net_paths. False refuses every
     45-degree cut (pitch too fine for a diagonal to clear a diagonally-
-    adjacent node — geometry.CopperGeometry.diagonals_ok)."""
+    adjacent node — geometry.CopperGeometry.diagonals_ok).
+
+    net_exclusion: net_code -> (via_exclusion_mm, track_exclusion_mm), the
+    PER-NET-CLASS spacing. This is what turns a declared net class into an
+    enforced one. A net's own class decides how wide a neighbourhood its
+    copper sterilises, so a 1.0 mm-clearance HV net claims a disk two grid
+    steps across while a 0.15 mm logic net claims only the node it is on,
+    and the same capacity-1 usage accounting that already resolves via halos
+    resolves both. Nets absent from the map fall back to the scalar
+    via_exclusion_mm and no track halo, i.e. the pre-per-class behaviour, so
+    None (the default, and what every hand-built test passes) leaves the
+    router bit-identical."""
     import mlx.core as mx
     import wavefront
 
@@ -352,11 +432,21 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             masks[net] = m
         return m
 
-    halo = _via_halo(lat, via_exclusion_mm)
+    default_via_halo = _via_halo(lat, via_exclusion_mm)
+    via_halos, track_halos = {}, {}
+    for net, radii in (net_exclusion or {}).items():
+        vh = _via_halo(lat, radii[0])
+        th = _track_halo(lat, radii[1])
+        if vh:
+            via_halos[net] = vh
+        if th:
+            track_halos[net] = th
+    halo = bool(default_via_halo) or bool(via_halos) or bool(track_halos)
     pad_exempt = frozenset(node_owner)   # includes build_connections' claims
 
-    def foot(path):
-        return _footprint(lat, path, halo, pad_exempt)
+    def foot(net, path):
+        return _footprint(lat, path, via_halos.get(net, default_via_halo),
+                          pad_exempt, track_halos.get(net))
 
     hist = np.zeros(N, dtype=np.float32)
     streak = np.zeros(N, dtype=np.int32)  # consecutive iterations overused
@@ -379,7 +469,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         for c in conns:
             if c.path is not None:
                 kept_by_net.setdefault(c.net, []).append(set(c.path))
-                kept_foot.setdefault(c.net, set()).update(foot(c.path))
+                kept_foot.setdefault(c.net, set()).update(foot(c.net, c.path))
         kept_usage = np.zeros(N, dtype=np.float32)
         for net, nodes in kept_foot.items():
             kept_usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1.0
@@ -460,7 +550,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         nodes_by_net = {}
         for c in conns:
             if c.path is not None:
-                nodes_by_net.setdefault(c.net, set()).update(foot(c.path))
+                nodes_by_net.setdefault(c.net, set()).update(foot(c.net, c.path))
         usage = np.zeros(N, dtype=np.int32)
         for net, nodes in nodes_by_net.items():
             usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1
@@ -520,7 +610,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             # Footprint, not path: a connection whose VIA HALO lands on an
             # overused node is a party to that conflict and must be rippable,
             # even though no copper of its own sits on the node.
-            for v in foot(c.path):
+            for v in foot(c.net, c.path):
                 if v not in over_nodes:
                     continue
                 if c not in touched:
@@ -593,7 +683,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         for c in conns:
             if c.path is None:
                 continue
-            fp = foot(c.path)
+            fp = foot(c.net, c.path)
             hit = next((v for v in fp if claimed.get(v, c.net) != c.net), None)
             if hit is not None:
                 c.reason = (f"congestion unresolved after {iterations} iterations "
@@ -634,12 +724,21 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             "degraded_pairs": clearance.degraded_pairs,
             "soft_crossings": soft_x,
             "inflate_mm": clearance.inflate_mm,
+            "max_inflate_mm": clearance.max_inflate_mm or clearance.inflate_mm,
         }
     via_stats = None
     if halo:
-        via_stats = {"exclusion_mm": float(via_exclusion_mm),
-                     "halo_nodes_per_layer": len(halo),
-                     "halo_layers": lat.L}
+        via_stats = {
+            "exclusion_mm": float(via_exclusion_mm),
+            "halo_nodes_per_layer": len(default_via_halo or [(0, 0)]),
+            "halo_layers": lat.L,
+            # Per-class enforcement, reported so the routability it costs is
+            # visible rather than inferred.
+            "class_via_nets": len(via_halos),
+            "track_halo_nets": len(track_halos),
+            "track_halo_max_nodes": max((len(h) for h in track_halos.values()),
+                                        default=0),
+        }
 
     t0 = time.perf_counter()
     tracks, vias = paths_to_tracks(lat, net_paths)
@@ -653,15 +752,16 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         # every net). Path nodes overlay pad rectangles so an extra_allow
         # crossing reads as the crossing net — conservative for the pad's
         # own net near it.
-        # Via halos join the occupancy too: a chamfer must not cut a corner
-        # into the exclusion zone of another net's via, which the raw path
-        # (routed under the halo-aware usage model) respected by construction.
+        # Via and track halos join the occupancy too: a chamfer must not cut
+        # a corner into the exclusion zone of another net's via or of a wide
+        # net class's track, which the raw path (routed under the halo-aware
+        # usage model) respected by construction.
         occupied = dict(node_owner)
         if clearance is not None:
             occupied.update(clearance.node_net)
         for net, paths in net_paths.items():
             for path in paths:
-                for v in _footprint(lat, path, halo, pad_exempt):
+                for v in foot(net, path):
                     occupied[v] = net
         sm_tracks = polylines_to_tracks(
             smooth_net_paths(lat, net_paths, occupied,
@@ -732,8 +832,8 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     conservative; the next batch/pass picks up the slack). Intra-net safety
     is _net_stays_connected. Returns (cost_before, cost_after).
 
-    foot(path) -> the nodes a path occupies (path + via halos; plain set(path)
-    when via exclusion is off). Obstacles, adoption claims and the legality
+    foot(net, path) -> the nodes a path occupies (path + its net class's via
+    and track halos; plain set(path) when exclusion is off). Obstacles, adoption claims and the legality
     audit all speak footprints. The kernel cannot see a candidate's OWN new
     via halo, so every candidate is re-checked against used_all before it is
     adopted — otherwise refine could shorten a path by parking a fresh via
@@ -743,7 +843,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     from backtrace import path_cost
 
     if foot is None:
-        def foot(path):
+        def foot(_net, path):
             return set(path)
     soft_mx = mx.array(soft_np) if soft_np is not None else None
 
@@ -769,7 +869,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
             used_all = np.zeros(N, dtype=np.uint8)
             own_nodes = {}
             for net, cs in by_net.items():
-                nodes = set().union(*(foot(c.path) for c in cs))
+                nodes = set().union(*(foot(c.net, c.path) for c in cs))
                 own_nodes[net] = nodes
                 used_all[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
 
@@ -827,7 +927,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
                                      lat.weight) + soft_sum(c.path)
                 if not new_cost < old_cost - 1e-6:
                     continue
-                fp = foot(cand)
+                fp = foot(c.net, cand)
                 # The kernel avoided every OTHER net's footprint, but not the
                 # halo of a via this candidate itself introduces. Re-check.
                 if any(used_all[v] and v not in own_nodes[c.net] for v in fp):
@@ -846,7 +946,7 @@ def _refine(lat, conns, net_mask, rp, ci, wt, N, refine_passes, batch_size,
     nodes_by_net = {}
     for c in conns:
         if c.path is not None:
-            nodes_by_net.setdefault(c.net, set()).update(foot(c.path))
+            nodes_by_net.setdefault(c.net, set()).update(foot(c.net, c.path))
     usage = np.zeros(N, dtype=np.int32)
     for nodes in nodes_by_net.values():
         usage[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] += 1
@@ -901,7 +1001,7 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
     import wavefront
 
     if foot is None:
-        def foot(path):
+        def foot(_net, path):
             return set(path)
     soft_mx = mx.array(soft_np) if soft_np is not None else None
     for c in group:
@@ -914,7 +1014,7 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
     used = np.zeros(N, dtype=np.uint8)
     own_nodes = {}
     for net, cs in by_net.items():
-        nodes = set().union(*(foot(o.path) for o in cs))
+        nodes = set().union(*(foot(o.net, o.path) for o in cs))
         own_nodes[net] = nodes
         used[np.fromiter(nodes, dtype=np.int64, count=len(nodes))] = 1
     for c in group:
@@ -951,7 +1051,7 @@ def _clique_resolve(lat, conns, group, net_mask, rp, ci, wt, N, max_rounds,
                                             cost=soft_np)
                     except ValueError:
                         path = None
-        nodes = foot(path) if path is not None else None
+        nodes = foot(c.net, path) if path is not None else None
         # As in _refine: the kernel could not see the halo of a via this very
         # path introduces. A candidate whose halo lands on foreign copper is
         # not a solution — fail it loudly and let the ordering self-correct.
@@ -1019,7 +1119,39 @@ def paths_to_tracks(lat, net_paths):
 
 # ── board plumbing ────────────────────────────────────────────────────────────
 
-def net_pads_for_board(board, lat, node_owner=None):
+def pad_region_index(regions, pad, tol_mm=0.0):
+    """Index of the outline region a pad sits on, or None when it sits on
+    none of them (a footprint hanging off the board). Overlapping region
+    bboxes resolve to the FIRST match, so the answer is deterministic."""
+    for i, r in enumerate(regions):
+        if r.contains(pad.x_mm, pad.y_mm, tol_mm):
+            return i
+    return None
+
+
+def cross_region_nets(board, regions):
+    """net_code -> sorted region indices, for every net with pads on MORE
+    THAN ONE board region.
+
+    On a panel these are the nets that cannot be routed as one board: their
+    pads are on physically separate pieces of FR4 with air between them. The
+    router must never quietly draw copper across that gap, and it must never
+    quietly pretend the nets are fine either — so this is computed before
+    anything is routed and reported by name.
+    """
+    if len(regions) < 2:
+        return {}
+    seen = {}
+    for pad in board.pads:
+        if pad.net_code <= 0:
+            continue
+        i = pad_region_index(regions, pad)
+        if i is not None:
+            seen.setdefault(pad.net_code, set()).add(i)
+    return {code: sorted(v) for code, v in seen.items() if len(v) > 1}
+
+
+def net_pads_for_board(board, lat, node_owner=None, regions=None):
     """Board pads -> net_pads for build_connections. A through-hole pad snaps
     on EVERY lattice layer (one set); an SMD pad on its own layer(s) present.
 
@@ -1027,9 +1159,15 @@ def net_pads_for_board(board, lat, node_owner=None):
     arbitration assigned to its net: the whole footprint is the escape set, so
     a route can leave by any side of the pad, not only past the snap node —
     fine-pitch pads whose snap node is hemmed in by a neighbor's claim would
-    otherwise be unreachable."""
+    otherwise be unreachable.
+
+    regions: the board's outline regions. When given (and there is more than
+    one), each pad carries its region index as its build_connections GROUP,
+    so a net repeated across a panel's boards gets one MST per board instead
+    of one spanning the empty space between them."""
     from lattice import pad_rect_nodes
     node_owner = node_owner or {}
+    grouping = regions if regions and len(regions) > 1 else None
     net_pads = {}
     for pad in board.pads:
         if pad.net_code <= 0:
@@ -1045,8 +1183,10 @@ def net_pads_for_board(board, lat, node_owner=None):
                 if node_owner.get(n) == pad.net_code and n not in nodes:
                     nodes.append(n)
         if nodes:
+            group = pad_region_index(grouping, pad) if grouping else 0
             net_pads.setdefault(pad.net_code, []).append(
-                (tuple(nodes), (pad.x_mm, pad.y_mm)))
+                (tuple(nodes), (pad.x_mm, pad.y_mm),
+                 -1 if group is None else group))
     return net_pads
 
 
@@ -1122,7 +1262,7 @@ def _widths_of_routed_nets(widths, net_pads, emit_defaults):
     its class inflate every via halo on the board would cost routability for
     copper that never gets written."""
     routed = {code for code, pads in net_pads.items()
-              if code > 0 and len({frozenset(nodes) for nodes, _ in pads}) >= 2}
+              if code > 0 and len({frozenset(p[0]) for p in pads}) >= 2}
     out = {code: widths.get(code, emit_defaults) for code in routed}
     return out or dict(widths)      # nothing routable: model everything
 
@@ -1161,8 +1301,19 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
                 track_width_mm=None, via_size_mm=None, via_exclusion=True,
                 fab=None, fab_enforce=False, width_map=None,
-                max_width_mm=None, **kwargs):
+                max_width_mm=None, region_index=None, **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
+
+    region_index: which of the board's disjoint Edge.Cuts outlines to route.
+    A .kicad_pcb may hold several — a PANEL of separate boards, with air
+    between them. None (the default) keeps every region on one lattice, with
+    the space between them hard-blocked and each net's pads grouped by the
+    board they sit on, so no copper crosses the gap. An integer routes ONE
+    board of the panel on a lattice sized to it alone: faster, and the only
+    honest way to report a score, since the panel's regions are separate
+    products that do not share a routing problem. Either way, nets with pads
+    on more than one region are named on RouteResult.region_warnings — they
+    cannot be connected by any router.
 
     directions/via_cost/dir_penalty go to lattice_for_board (board-routing
     defaults: both-direction layers, expensive vias); **kwargs go to
@@ -1210,7 +1361,7 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     import fab as fab_mod
 
     from board import load_board
-    from geometry import resolve_board_geometry
+    from geometry import resolve_board_geometry, resolve_net_classes
     from lattice import (clearance_map, lattice_for_board,
                          pad_overlap_allowances)
 
@@ -1229,13 +1380,69 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     brd = load_board(board_path)
     t_load = time.perf_counter() - t0
 
+    # ── board regions, BEFORE anything is routed ────────────────────────
+    # A panel is several boards in one file. The union bbox says nothing
+    # about which parts of it are FR4, so this is settled first and every
+    # later step reads it.
+    from lattice import board_outline_regions
+    panel = board_outline_regions(brd)
+    spanning = cross_region_nets(brd, panel)
+    region_warnings = []
+    if len(panel) > 1:
+        region_warnings.append(
+            f"MULTI-BOARD PANEL: {os.path.basename(board_path)} contains "
+            f"{len(panel)} disjoint Edge.Cuts outlines, i.e. {len(panel)} "
+            f"separate boards with air between them. The space between them "
+            f"is NOT routable and has been blocked; "
+            + "; ".join(
+                f"region {i} at ({r.origin_mm[0]:.1f}, {r.origin_mm[1]:.1f}) "
+                f"{r.size_mm[0]:.1f}x{r.size_mm[1]:.1f} mm"
+                for i, r in enumerate(panel))
+            + ". Route one board at a time with --region-index N; a score "
+              "over the whole panel is a score for no product.")
+    if spanning:
+        named = sorted(str(brd.nets.get(c, c)) for c in spanning)
+        region_warnings.append(
+            f"{len(spanning)} net(s) have pads on more than one board region; "
+            f"they cannot be routed as one board — route regions separately "
+            f"or add a connector. NO copper was emitted across the gap: each "
+            f"region's share of these nets was routed on its own board. "
+            f"Nets: " + ", ".join(named[:20])
+            + (f", ... (+{len(named) - 20} more)" if len(named) > 20 else ""))
+
+    routed_region = None
+    if region_index is not None:
+        if not (0 <= region_index < len(panel)):
+            raise ValueError(
+                f"--region-index {region_index} out of range: this board has "
+                f"{len(panel)} outline region(s) (0..{len(panel) - 1})")
+        routed_region = panel[region_index]
+        keep = [p for p in brd.pads
+                if pad_region_index([routed_region], p) is not None]
+        dropped = len(brd.pads) - len(keep)
+        # A view of the panel holding ONE board: the lattice, the clearance
+        # rings and the edge band then all describe that board and nothing
+        # else. dataclasses.replace keeps every other field identical, so
+        # nothing downstream needs to know this happened.
+        brd = dataclasses.replace(
+            brd, pads=keep, origin_mm=routed_region.origin_mm,
+            size_mm=routed_region.size_mm, outline_regions=(routed_region,))
+        region_warnings.append(
+            f"routing region {region_index} of {len(panel)} only: "
+            f"({routed_region.origin_mm[0]:.1f}, "
+            f"{routed_region.origin_mm[1]:.1f}) "
+            f"{routed_region.size_mm[0]:.1f}x{routed_region.size_mm[1]:.1f} mm, "
+            f"{len(keep)} pads; {dropped} pads on other regions are NOT part "
+            f"of this run and their nets are not counted in its score.")
+
     t0 = time.perf_counter()
     lat, pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
                                                    layer_names=layer_names,
                                                    directions=directions,
                                                    via_cost=via_cost,
                                                    dir_penalty=dir_penalty)
-    net_pads = net_pads_for_board(brd, lat, node_owner)
+    net_pads = net_pads_for_board(brd, lat, node_owner,
+                                  regions=brd.outline_regions)
 
     # ── copper resolution, BEFORE the contract ──────────────────────────
     # Every number the geometry line prints and every halo the router plans
@@ -1283,14 +1490,35 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     # tool wall pads at 0.2 mm while its own contract line said 0.15.
     ring_clearance = 0.0 if (clearance_arg is not None and clearance_arg <= 0) \
         else geo.clearance_mm
+
+    # ── per-net-class clearance ─────────────────────────────────────────
+    # One clearance for the whole board is wrong on any board that separates
+    # HV from logic. The project's classes are resolved per NET here (through
+    # the same writeback machinery that resolves widths, so class membership
+    # cannot disagree between the two), and the number is then enforced twice:
+    # each pad's ring inflates by its OWN net's clearance, and each net's
+    # copper claims an exclusion halo sized by its own class. A caller-supplied
+    # clearance is one number by definition and retires both.
+    net_clearance, net_exclusion = {}, {}
+    if geo.classes and clearance_arg is None:
+        net_clearance, _cls = resolve_net_classes(board_path, brd.nets,
+                                                  clearance_mm=geo.clearance_mm)
+        for code, (tw, vs, _vd) in widths.items():
+            if code <= 0:
+                continue
+            clr = float(net_clearance.get(code, geo.clearance_mm))
+            net_exclusion[code] = (vs / 2.0 + tw / 2.0 + clr, clr + tw / 2.0)
     clearance = clearance_map(brd, lat, node_owner, pad_nodes,
                               clearance_mm=ring_clearance,
-                              track_width_mm=geo.track_width_mm) \
+                              track_width_mm=geo.track_width_mm,
+                              clearance_by_net=net_clearance or None) \
         if ring_clearance > 0 else None
     t_lat = time.perf_counter() - t0
     kwargs.setdefault("via_exclusion_mm",
                       geo.via_exclusion_mm if via_exclusion else 0.0)
     kwargs.setdefault("allow_diagonals", geo.diagonals_ok)
+    if via_exclusion and net_exclusion:
+        kwargs.setdefault("net_exclusion", net_exclusion)
     res = route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
                         clearance=clearance, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
@@ -1304,6 +1532,11 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     res.fab_note = fab_mod.summary_line(geo, profile,
                                         violations=res.fab_violations)
     res.fab_warnings = fab_warnings + fab_notes
+    res.regions = tuple(panel)
+    res.region_index = region_index
+    res.cross_region_nets = {c: v for c, v in spanning.items()}
+    res.region_warnings = region_warnings
+    res.net_clearance = net_clearance
     return brd, lat, res
 
 
@@ -1365,6 +1598,13 @@ def main(argv=None):
                     help="snap copper geometry to the --fab profile's "
                          "cheapest legal values, naming every change "
                          "(without this, violations only warn)")
+    ap.add_argument("--region-index", type=int, default=None, metavar="N",
+                    help="route only board region N of a multi-board panel "
+                         "(see --list-regions). Default: every region on one "
+                         "lattice, with the space between them blocked")
+    ap.add_argument("--list-regions", action="store_true",
+                    help="print the board's disjoint Edge.Cuts outlines and "
+                         "the nets that span them, then exit")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
@@ -1374,14 +1614,42 @@ def main(argv=None):
     except fab_mod.UnknownProfile as e:
         ap.error(str(e))
 
-    brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers,
-                                directions=args.directions, via_cost=args.via_cost,
-                                dir_penalty=args.dir_penalty,
-                                clearance_mm=args.clearance,
-                                via_exclusion=not args.no_via_exclusion,
-                                fab=args.fab, fab_enforce=args.fab_enforce,
-                                refine_passes=0 if args.no_refine else 2,
-                                smooth=not args.no_smooth)
+    if args.list_regions:
+        from board import load_board
+        from lattice import board_outline_regions
+        brd = load_board(args.board)
+        regions = board_outline_regions(brd)
+        print(f"board       : {args.board.split('/')[-1]}")
+        print(f"regions     : {len(regions)} disjoint Edge.Cuts outline(s)")
+        for i, r in enumerate(regions):
+            n = sum(1 for p in brd.pads
+                    if pad_region_index([r], p) is not None)
+            print(f"  region {i}: origin ({r.origin_mm[0]:.2f}, "
+                  f"{r.origin_mm[1]:.2f}) size {r.size_mm[0]:.2f} x "
+                  f"{r.size_mm[1]:.2f} mm | {r.shapes} outline graphic(s) | "
+                  f"{n} pads")
+        spanning = cross_region_nets(brd, regions)
+        print(f"spanning    : {len(spanning)} net(s) with pads on more than "
+              f"one region")
+        for code, idx in sorted(spanning.items(),
+                                key=lambda kv: str(brd.nets.get(kv[0]))):
+            print(f"  {brd.nets.get(code, code)}: regions {idx}")
+        return 0
+
+    try:
+        brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
+                                    layer_names=layers,
+                                    directions=args.directions,
+                                    via_cost=args.via_cost,
+                                    dir_penalty=args.dir_penalty,
+                                    clearance_mm=args.clearance,
+                                    via_exclusion=not args.no_via_exclusion,
+                                    fab=args.fab, fab_enforce=args.fab_enforce,
+                                    region_index=args.region_index,
+                                    refine_passes=0 if args.no_refine else 2,
+                                    smooth=not args.no_smooth)
+    except ValueError as e:
+        ap.error(str(e))
 
     failed_nets = {n for n, _ in res.failed}
     routable = set(res.net_paths) | failed_nets
@@ -1390,11 +1658,19 @@ def main(argv=None):
           f"({len(brd.pads)} pads, {len(brd.nets)} nets)")
     print(f"lattice     : {lat.W}x{lat.H}x{lat.L}  pitch {lat.pitch_mm} mm  "
           f"{lat.layer_names}")
+    if len(res.regions or ()) > 1 or res.region_index is not None:
+        where = "all (space between them blocked)" \
+            if res.region_index is None else f"region {res.region_index}"
+        print(f"regions     : {len(res.regions)} board outline(s) | routing "
+              f"{where} | {len(res.cross_region_nets or {})} net(s) span "
+              f"regions")
     print(f"nets        : {len(routable)} routable | "
           f"{len(routable - failed_nets)} fully routed | {len(failed_nets)} with failures")
     print(f"connections : {conn_total}  ({len(res.conflicts)} pad-snap conflicts)")
     print(f"geometry    : {res.geometry_note}")
     print(f"fab         : {res.fab_note}")
+    for w in (res.region_warnings or []):
+        print(f"WARNING     : {w}")
     for w in (res.geometry_warnings or []):
         print(f"WARNING     : {w}")
     for w in (res.fab_warnings or []):
@@ -1407,7 +1683,10 @@ def main(argv=None):
         print(f"refine      : path cost -{res.seconds['refine_gain_pct']:.2f}%")
     if res.clearance_stats:
         cs = res.clearance_stats
-        print(f"clearance   : inflate {cs['inflate_mm']:.3f} mm | "
+        widest = ""
+        if cs.get("max_inflate_mm", 0) > cs["inflate_mm"] + 1e-9:
+            widest = f" (widest class {cs['max_inflate_mm']:.3f})"
+        print(f"clearance   : inflate {cs['inflate_mm']:.3f} mm{widest} | "
               f"{cs['claimed_nodes']} ring/edge nodes "
               f"({cs['edge_nodes']} edge) | "
               f"{cs['degraded_pairs']} pad pairs degraded to soft | "
@@ -1417,6 +1696,10 @@ def main(argv=None):
         print(f"via exclude : r {vs['exclusion_mm']:.3f} mm | "
               f"{vs['halo_nodes_per_layer']} nodes/layer x "
               f"{vs['halo_layers']} layers claimed per via")
+        if vs.get("track_halo_nets"):
+            print(f"class space : {vs['track_halo_nets']} net(s) claim a track "
+                  f"exclusion halo (up to {vs['track_halo_max_nodes']} "
+                  f"nodes/step) from their net class's clearance")
     print("seconds     : " + " | ".join(f"{k} {v:.2f}" for k, v in res.seconds.items()
                                         if not k.endswith("_pct")))
     for net, reason in res.failed[:10]:

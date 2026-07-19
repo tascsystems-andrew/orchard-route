@@ -120,9 +120,11 @@ def build_lattice(W, H, L, pitch_mm=1.0, origin_mm=(0.0, 0.0), layer_names=None,
     v = np.concatenate(vs)
     w = np.concatenate(ws)
 
-    if blocked:
+    if blocked is not None and len(blocked):
+        idx = blocked if isinstance(blocked, np.ndarray) else \
+            np.fromiter(blocked, dtype=np.int64, count=len(blocked))
         bmask = np.zeros(N, dtype=bool)
-        bmask[np.fromiter(blocked, dtype=np.int64, count=len(blocked))] = True
+        bmask[idx] = True
         keep = ~(bmask[u] | bmask[v])
         u, v, w = u[keep], v[keep], w[keep]
 
@@ -380,11 +382,49 @@ class Clearance:
     free_allow: dict = field(default_factory=dict)
     degraded_pairs: int = 0
     edge_nodes: int = 0
-    inflate_mm: float = 0.0
+    inflate_mm: float = 0.0       # the DEFAULT class's ring inflation
+    max_inflate_mm: float = 0.0   # the widest class's, when clearance is
+                                  # resolved per net class; else == inflate_mm
+
+
+def board_outline_regions(board):
+    """[OutlineRegion-like] for a board, never empty.
+
+    Falls back to ONE region spanning origin_mm/size_mm for boards whose
+    outline could not be read and for the synthetic Boards that tests and
+    region.py build by hand — so every caller can loop over regions without
+    branching on whether the board knew about them."""
+    regions = getattr(board, "outline_regions", None)
+    if regions:
+        return list(regions)
+    from board import OutlineRegion
+    return [OutlineRegion(origin_mm=tuple(board.origin_mm),
+                          size_mm=tuple(board.size_mm), shapes=0)]
+
+
+def _region_depth(regions, xs, ys):
+    """(H, W) array: distance from each grid point INTO the nearest region
+    that contains it, negative outside every region.
+
+    One region reproduces the old single-bbox `din` exactly. Several regions
+    take the elementwise MAX, which is what makes the empty band between two
+    panelised boards read as outside-the-board rather than as interior: no
+    region claims it, so its depth is the (negative) distance to the closest
+    outline."""
+    depth = None
+    for r in regions:
+        x0, y0 = r.origin_mm
+        x1 = x0 + r.size_mm[0]
+        y1 = y0 + r.size_mm[1]
+        d = np.minimum(np.minimum(xs - x0, x1 - xs)[None, :],
+                       np.minimum(ys - y0, y1 - ys)[:, None])
+        depth = d if depth is None else np.maximum(depth, d)
+    return depth
 
 
 def clearance_map(board, lat, node_owner, pad_nodes,
-                  clearance_mm=None, track_width_mm=None):
+                  clearance_mm=None, track_width_mm=None,
+                  clearance_by_net=None):
     """Build the Clearance structure for a board on its lattice.
 
     inflate = clearance + track_width/2: the centerline keep-out that makes a
@@ -392,6 +432,21 @@ def clearance_map(board, lat, node_owner, pad_nodes,
     to the project Default class (default_copper_rules); the width is capped
     at the pitch, mirroring writeback's emit-time cap — copper wider than
     the pitch is refused there too.
+
+    clearance_by_net (net_code -> clearance_mm) makes the inflation PER PAD
+    NET, which is what a board carrying an HV class actually needs: a plate
+    node's pad must hold foreign copper 1.0 mm away while a logic pad two
+    millimetres along is fine at 0.15 mm. One global number cannot say that,
+    and saying it with the global number is how a declared HV class became
+    decoration. Absent (the default) every pad inflates by the same
+    `clearance_mm`, bit-identical to the pre-per-class model.
+
+    RESIDUAL, stated rather than hidden: the ring belongs to the PAD's class,
+    so HV pad vs any copper is enforced at the HV number, but HV TRACK vs a
+    logic pad is enforced at the logic pad's number. Track-vs-track spacing
+    for the HV net is enforced by its exclusion halo in pathfinder; a pad
+    cannot move, so widening every pad's ring to the widest class on the
+    board would wall in nets that have no HV anywhere near them.
 
     Rules:
     - ring nodes claim their pad's net; nodes already in node_owner are
@@ -404,8 +459,10 @@ def clearance_map(board, lat, node_owner, pad_nodes,
     - non-overlapping pads with rect gap < 2*inflate can have NO legal lane
       between them at all: the ring intersection (the corridor) degrades to
       soft for the two pads' nets, counted in degraded_pairs;
-    - every node within inflate of the Edge.Cuts bbox boundary (or outside
-      it — the lattice margin) is claimed -1, except pad-owned/snap nodes.
+    - every node within inflate of ANY outline region's boundary, and every
+      node outside every region (the lattice margin, and the empty band
+      between two panelised boards) is claimed -1, except pad-owned/snap
+      nodes.
     """
     pro_clearance, pro_width = default_copper_rules(board.path)
     if clearance_mm is None:
@@ -413,9 +470,21 @@ def clearance_map(board, lat, node_owner, pad_nodes,
     if track_width_mm is None:
         track_width_mm = pro_width
     track_width_mm = min(track_width_mm, lat.pitch_mm)
-    inflate = clearance_mm + track_width_mm / 2.0
+    half_w = track_width_mm / 2.0
+    inflate = clearance_mm + half_w
     clr = Clearance(inflate_mm=inflate)
     node_net = clr.node_net
+
+    def inflate_of(pad):
+        if not clearance_by_net:
+            return inflate
+        return float(clearance_by_net.get(pad.net_code, clearance_mm)) + half_w
+
+    max_inflate = inflate
+    if clearance_by_net:
+        max_inflate = max([inflate]
+                          + [float(v) + half_w for v in clearance_by_net.values()])
+    clr.max_inflate_mm = max_inflate
 
     ring_cache = {}
 
@@ -424,9 +493,10 @@ def clearance_map(board, lat, node_owner, pad_nodes,
         got = ring_cache.get(key)
         if got is None:
             got = set()
+            infl = inflate_of(pad)
             for ln in pad.layers:
                 if ln in lat.layer_names:
-                    got.update(n for n in pad_ring_nodes(lat, pad, ln, inflate)
+                    got.update(n for n in pad_ring_nodes(lat, pad, ln, infl)
                                if n not in node_owner)
             ring_cache[key] = got
         return got
@@ -444,7 +514,10 @@ def clearance_map(board, lat, node_owner, pad_nodes,
 
     # Pad-pair scan: same 4 mm spatial hash as pad_overlap_allowances (max pad
     # half-diagonal in the wild ~1.8 mm; 2*inflate adds well under the cell).
-    cell = 4.0
+    # A wide net class pushes 2*inflate past that, so the cell grows with it —
+    # pairs further apart than one cell are skipped, and skipping a pair only
+    # forgoes a soft-degrade allowance, which is the conservative direction.
+    cell = max(4.0, 2.0 * max_inflate + 2.0)
     grid = {}
     for pad in live:
         key = (int(pad.x_mm // cell), int(pad.y_mm // cell))
@@ -472,7 +545,7 @@ def clearance_map(board, lat, node_owner, pad_nodes,
                     if not set(p.layers) & set(q.layers):
                         continue
                     gap = _rect_gap(p, q)
-                    if gap >= 2.0 * inflate:
+                    if gap >= inflate_of(p) + inflate_of(q):
                         continue
                     if gap == 0.0:
                         # Board-intended overlap: both nets pass both rings
@@ -491,20 +564,18 @@ def clearance_map(board, lat, node_owner, pad_nodes,
                         allow(clr.soft_allow, q.net_code, corridor)
                         clr.degraded_pairs += 1
 
-    # Board-edge band: nodes within inflate of the Edge.Cuts bbox boundary,
-    # and every margin node beyond it — copper there is a copper_edge
-    # violation (or off the board entirely). Pad-owned and pad-snap nodes are
-    # exempt: the pad copper already lives there in the input board, and
-    # walling a pad in would fail its whole net for a violation the router
-    # did not create.
+    # Board-edge band: nodes within inflate of ANY outline region's boundary,
+    # and every node outside every region — copper there is a copper_edge
+    # violation, or is off the board entirely. On a PANEL that second clause
+    # is the whole fix: the empty band between two boards belongs to no
+    # region, so it reads as off-board and stops being routable. Pad-owned
+    # and pad-snap nodes are exempt: the pad copper already lives there in
+    # the input board, and walling a pad in would fail its whole net for a
+    # violation the router did not create.
     ox, oy = lat.origin_mm
-    x0, y0 = board.origin_mm
-    x1 = x0 + board.size_mm[0]
-    y1 = y0 + board.size_mm[1]
     xs = ox + np.arange(lat.W, dtype=np.float64) * lat.pitch_mm
     ys = oy + np.arange(lat.H, dtype=np.float64) * lat.pitch_mm
-    din = np.minimum(np.minimum(xs - x0, x1 - xs)[None, :],
-                     np.minimum(ys - y0, y1 - ys)[:, None])   # (H, W)
+    din = _region_depth(board_outline_regions(board), xs, ys)   # (H, W)
     plane = np.flatnonzero((din < inflate - 1e-9).ravel())
     exempt = set(node_owner)
     for nodes in pad_nodes.values():
@@ -530,8 +601,51 @@ def clearance_map(board, lat, node_owner, pad_nodes,
     return clr
 
 
+def _inter_region_nodes(board, W, H, L, pitch_mm, origin_mm):
+    """Lattice nodes that are not on ANY board, for a multi-region file.
+
+    A .kicad_pcb holding several disjoint outlines is a PANEL of separate
+    boards, and the space between them is air. The lattice spans the union
+    bbox, so without this every one of those empty nodes is a routable node
+    and the router draws copper across nothing — measured on Voxy-arduino,
+    where 27 nets have pads on two different boards and were "routed"
+    through a 20 mm gap.
+
+    Returns an int64 array of blocked node ids (empty for a single-region or
+    outline-less board, so nothing about those changes). Nodes under a PAD
+    are never blocked: a footprint may legitimately hang over its outline,
+    and blocking its copper would fail that pad's net for a fault the router
+    did not create — the same exemption the edge band already makes.
+    """
+    regions = board_outline_regions(board)
+    if len(regions) < 2:
+        return np.empty(0, dtype=np.int64)
+    ox, oy = origin_mm
+    xs = ox + np.arange(W, dtype=np.float64) * pitch_mm
+    ys = oy + np.arange(H, dtype=np.float64) * pitch_mm
+    keep = _region_depth(regions, xs, ys) >= -1e-9      # (H, W), on a board
+    for pad in board.pads:
+        t = math.radians(getattr(pad, "rotation_deg", 0.0))
+        c, s = math.cos(t), math.sin(t)
+        hw, hh = pad.width_mm / 2.0, pad.height_mm / 2.0
+        bx = abs(hw * c) + abs(hh * s)
+        by = abs(hw * s) + abs(hh * c)
+        ix0 = max(0, int(np.ceil((pad.x_mm - bx - ox) / pitch_mm - 1e-9)))
+        ix1 = min(W - 1, int(np.floor((pad.x_mm + bx - ox) / pitch_mm + 1e-9)))
+        iy0 = max(0, int(np.ceil((pad.y_mm - by - oy) / pitch_mm - 1e-9)))
+        iy1 = min(H - 1, int(np.floor((pad.y_mm + by - oy) / pitch_mm + 1e-9)))
+        if ix0 <= ix1 and iy0 <= iy1:
+            keep[iy0:iy1 + 1, ix0:ix1 + 1] = True
+    plane = np.flatnonzero((~keep).ravel())
+    if not plane.size:
+        return np.empty(0, dtype=np.int64)
+    return (plane[None, :] + (np.arange(L, dtype=np.int64) * (W * H))[:, None]
+            ).ravel()
+
+
 def lattice_for_board(board, pitch_mm, layer_names=None, directions="both",
-                      via_cost=12.0, dir_penalty=1.25):
+                      via_cost=12.0, dir_penalty=1.25,
+                      block_between_regions=True):
     """Board (board.py dataclass) -> (lattice over bbox+margin, pad_nodes, node_owner).
 
     Board-routing defaults deliberately differ from build_lattice's compat
@@ -549,6 +663,12 @@ def lattice_for_board(board, pitch_mm, layer_names=None, directions="both",
     entombs the loser (a pad with zero owned nodes cannot escape its own
     footprint).
     Ownership is DATA for per-net masking — those nodes keep all their CSR edges.
+
+    block_between_regions: on a board whose file holds SEVERAL disjoint
+    Edge.Cuts outlines (a panel), hard-block every node that lies on none of
+    them, so the router cannot route through the air between two boards
+    (_inter_region_nodes). No effect on a single-outline board. False
+    restores the pre-panel lattice for A/B measurement only.
     """
     if layer_names is None:
         layer_names = ["F.Cu", "B.Cu"]
@@ -558,9 +678,12 @@ def lattice_for_board(board, pitch_mm, layer_names=None, directions="both",
     W = int(np.ceil((board.size_mm[0] + 2.0 * margin) / pitch_mm)) + 1
     H = int(np.ceil((board.size_mm[1] + 2.0 * margin) / pitch_mm)) + 1
     L = len(layer_names)
+    blocked = _inter_region_nodes(board, W, H, L, pitch_mm, (ox, oy)) \
+        if block_between_regions else np.empty(0, dtype=np.int64)
     lat = build_lattice(W, H, L, pitch_mm=pitch_mm, origin_mm=(ox, oy),
                         layer_names=layer_names, directions=directions,
-                        via_cost=via_cost, dir_penalty=dir_penalty)
+                        via_cost=via_cost, dir_penalty=dir_penalty,
+                        blocked=blocked)
 
     layer_index = {name: i for i, name in enumerate(layer_names)}
     pad_nodes = {}

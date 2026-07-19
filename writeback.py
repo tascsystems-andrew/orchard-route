@@ -217,6 +217,34 @@ def _resolve_net_classes(pro_path, nets):
     return out, default_cls
 
 
+#: Fallback clearance when neither the winning class nor Default states one.
+#: Matches lattice.DEFAULT_CLEARANCE_MM (KiCad's stock 0.2 mm); duplicated
+#: rather than imported because this is L0 and lattice.py is L2.
+DEFAULT_CLEARANCE_MM = 0.2
+
+
+def load_net_class_clearances(pro_path, nets, clearance_mm=DEFAULT_CLEARANCE_MM):
+    """net_code -> clearance_mm for every net, from the project's net classes.
+
+    Same resolution as load_net_class_widths — same _resolve_net_classes, so
+    a net's clearance and its track width can never disagree about which
+    class it is in. This is the number the router must space that net's
+    copper by: on a tube amp the HV class exists for creepage, and applying
+    the Default class's clearance to it is exactly the silent wrong answer
+    the geometry contract exists to prevent.
+    """
+    resolved, default_cls = _resolve_net_classes(pro_path, nets)
+
+    def value(cls):
+        for src in (cls, default_cls):
+            v = src.get("clearance")
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return float(v)
+        return float(clearance_mm)
+
+    return {code: value(cls) for code, cls in resolved.items()}
+
+
 def load_net_class_names(pro_path, nets):
     """net_code -> net class NAME for every net in nets, resolved exactly
     like load_net_class_widths (same shared machinery — one vocabulary, no
@@ -681,6 +709,9 @@ def main(argv=None):
                     help="snap copper geometry to the --fab profile's "
                          "cheapest legal values, naming every change "
                          "(without this, violations only warn)")
+    ap.add_argument("--region-index", type=int, default=None, metavar="N",
+                    help="route only board region N of a multi-board panel "
+                         "(`pathfinder.py BOARD --list-regions` lists them)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
 
@@ -699,6 +730,7 @@ def main(argv=None):
                                 fab=args.fab, fab_enforce=args.fab_enforce,
                                 via_exclusion=not args.no_via_exclusion,
                                 width_map=args.width_map or None,
+                                region_index=args.region_index,
                                 max_width_mm=args.max_width)
     # Prefer the router's smoothed geometry (45-degree segments emit as plain
     # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
@@ -785,6 +817,8 @@ def main(argv=None):
         print(f"fab         : {fab_note}")
     for line in fab_lines:
         print(line)
+    for w in (getattr(res, "region_warnings", None) or []):
+        print(f"WARNING     : {w}")
     for w in (getattr(res, "geometry_warnings", None) or []):
         print(f"WARNING     : {w}")
     for w in fab_warnings:

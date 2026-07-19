@@ -55,6 +55,35 @@ class Via:
     x_mm: float; y_mm: float; drill_mm: float; size_mm: float; net_code: int
 
 
+@dataclass(frozen=True)
+class OutlineRegion:
+    """One connected Edge.Cuts outline — ONE physical board.
+
+    A .kicad_pcb may carry several disjoint outlines: a PANEL of separate
+    boards in one file, with empty space between them. `Board.origin_mm` /
+    `size_mm` are the UNION bbox of all of them (unchanged contract), which
+    on a panel describes an area that is mostly not board. Everything that
+    reasons about where copper may legally go must use these regions instead:
+    the space between two regions is air, and copper drawn across it is
+    copper drawn through nothing.
+    """
+    origin_mm: tuple   # (min_x, min_y) of this region's bbox
+    size_mm: tuple     # (width, height) of this region's bbox
+    shapes: int = 0    # Edge.Cuts graphics that make it up (diagnostics)
+
+    @property
+    def bounds(self):
+        """(x0, y0, x1, y1)."""
+        return (self.origin_mm[0], self.origin_mm[1],
+                self.origin_mm[0] + self.size_mm[0],
+                self.origin_mm[1] + self.size_mm[1])
+
+    def contains(self, x_mm, y_mm, tol_mm=0.0):
+        x0, y0, x1, y1 = self.bounds
+        return (x0 - tol_mm <= x_mm <= x1 + tol_mm
+                and y0 - tol_mm <= y_mm <= y1 + tol_mm)
+
+
 @dataclass
 class Board:
     path: str
@@ -63,6 +92,10 @@ class Board:
     copper_layers: list   # stackup order, F.Cu first, B.Cu last
     nets: dict         # net_code -> net_name (net 0 is the unconnected net)
     pads: list; tracks: list; vias: list
+    outline_regions: tuple = ()   # [OutlineRegion], one per disjoint outline;
+                                  # () when the file has no Edge.Cuts at all.
+                                  # A single-outline board yields exactly one,
+                                  # whose bbox equals origin_mm/size_mm.
 
 
 # ── s-expression parsing ──────────────────────────────────────────────────────
@@ -217,28 +250,22 @@ def _fp_frame(fp):
     return fx, fy, frot
 
 
-def _edge_bbox(root):
-    """Bounding box of Edge.Cuts graphics. Arcs and circles contribute their
-    center +/- radius extremes — a conservative superset, fine for a bbox.
+def _edge_shapes(root):
+    """Every Edge.Cuts graphic as (joint_points, (x0, y0, x1, y1)).
+
+    `joint_points` are the graphic's real vertices — the points at which it
+    can share an edge with another graphic. Circles and arcs also contribute
+    their centre +/- radius extremes to the BBOX (a conservative superset,
+    fine for a bbox) but never to the joints: a bbox corner is not a place
+    two outlines meet, and treating it as one would fuse a panel back into
+    a single region.
+
     Collects root gr_* nodes AND fp_* nodes inside footprints (some boards,
     e.g. SparkFun's, draw the whole outline inside a footprint), composing
     the footprint (at x y rot) transform for the latter."""
-    xs, ys = [], []
-
-    def add(x, y):
-        xs.append(x)
-        ys.append(y)
+    shapes = []
 
     def scan(parent, prefix, xform):
-        def add_node_pt(node):
-            if node is not None:
-                f = _floats(node)
-                if len(f) >= 2:
-                    p = xform(f[0], f[1])
-                    add(*p)
-                    return p
-            return None
-
         for g in parent:
             if not (isinstance(g, list) and g and isinstance(g[0], str)):
                 continue
@@ -251,35 +278,79 @@ def _edge_bbox(root):
             layer = _kid(g, "layer")
             if not (layer and len(layer) > 1 and str(layer[1]) == "Edge.Cuts"):
                 continue
+            joints, ext = [], []
+
+            def joint(node):
+                if node is not None:
+                    f = _floats(node)
+                    if len(f) >= 2:
+                        p = xform(f[0], f[1])
+                        joints.append(p)
+                        ext.append(p)
+                        return p
+                return None
+
             if kind in ("line", "rect"):
-                add_node_pt(_kid(g, "start"))
-                add_node_pt(_kid(g, "end"))
+                joint(_kid(g, "start"))
+                joint(_kid(g, "end"))
             elif kind == "circle":
                 c = _floats(_kid(g, "center") or ["center"])
                 e = _floats(_kid(g, "end") or ["end"])
                 if len(c) >= 2 and len(e) >= 2:
                     r = math.hypot(e[0] - c[0], e[1] - c[1])
                     cx, cy = xform(c[0], c[1])
-                    add(cx - r, cy - r)
-                    add(cx + r, cy + r)
-            elif kind == "arc":
-                p1 = add_node_pt(_kid(g, "start"))
-                pm = add_node_pt(_kid(g, "mid"))
-                p2 = add_node_pt(_kid(g, "end"))
+                    ext.append((cx - r, cy - r))
+                    ext.append((cx + r, cy + r))
+            elif kind == "arc" and _kid(g, "mid") is not None:
+                # KiCad 6+: start/mid/end all lie ON the curve.
+                p1 = joint(_kid(g, "start"))
+                pm = joint(_kid(g, "mid"))
+                p2 = joint(_kid(g, "end"))
                 if p1 and pm and p2:
                     cc = _circumcenter(p1, pm, p2)
                     if cc:
                         r = math.hypot(p1[0] - cc[0], p1[1] - cc[1])
-                        add(cc[0] - r, cc[1] - r)
-                        add(cc[0] + r, cc[1] + r)
+                        ext.append((cc[0] - r, cc[1] - r))
+                        ext.append((cc[0] + r, cc[1] + r))
+            elif kind == "arc":
+                # KiCad 5 and earlier: (start) is the CENTRE, (end) is one
+                # endpoint, (angle) sweeps to the other. The centre is not a
+                # joint — it is inside the board — and the file format does
+                # not settle the sweep's sign, so BOTH rotations of the known
+                # endpoint are offered as joints. The wrong one is a point on
+                # the arc's circle where no other outline graphic has a
+                # vertex (a corner fillet's mirror lands mid-board), so it
+                # joins nothing; the right one closes the outline. Without
+                # this, every rounded corner on a KiCad 5 board splits the
+                # outline into as many "regions" as it has straight edges —
+                # measured on rpi-pico-vga, which reported 4.
+                c = _floats(_kid(g, "start") or ["start"])
+                e = _floats(_kid(g, "end") or ["end"])
+                a = _floats(_kid(g, "angle") or ["angle"])
+                if len(c) >= 2 and len(e) >= 2:
+                    cx, cy = xform(c[0], c[1])
+                    ex, ey = xform(e[0], e[1])
+                    r = math.hypot(ex - cx, ey - cy)
+                    ext.append((cx - r, cy - r))
+                    ext.append((cx + r, cy + r))
+                    joints.append((ex, ey))
+                    sweep = a[0] if a else 0.0
+                    for sign in (1.0, -1.0):
+                        dx, dy = _rotate(ex - cx, ey - cy, sign * sweep)
+                        joints.append((cx + dx, cy + dy))
             elif kind == "poly":
                 pts = _kid(g, "pts")
                 for p in pts[1:] if pts else []:
                     if isinstance(p, list) and p and p[0] == "xy":
-                        add_node_pt(p)
+                        joint(p)
                     elif isinstance(p, list) and p and p[0] == "arc":
                         for sub in ("start", "mid", "end"):
-                            add_node_pt(_kid(p, sub))
+                            joint(_kid(p, sub))
+            if ext:
+                xs = [q[0] for q in ext]
+                ys = [q[1] for q in ext]
+                shapes.append((joints,
+                               (min(xs), min(ys), max(xs), max(ys))))
 
     scan(root, "gr_", lambda x, y: (x, y))
     for fp in _footprints(root):
@@ -290,9 +361,118 @@ def _edge_bbox(root):
             return fx + dx, fy + dy
 
         scan(fp, "fp_", to_board)
-    if not xs:
+    return shapes
+
+
+#: Two Edge.Cuts vertices this close (mm) are the same corner. KiCad snaps
+#: outline endpoints, so the tolerance only has to absorb 6-decimal rounding.
+REGION_JOIN_TOL_MM = 0.01
+
+
+def _edge_bbox_of(shapes):
+    if not shapes:
         return (0.0, 0.0), (0.0, 0.0)
-    return (min(xs), min(ys)), (max(xs) - min(xs), max(ys) - min(ys))
+    x0 = min(b[0] for _j, b in shapes)
+    y0 = min(b[1] for _j, b in shapes)
+    x1 = max(b[2] for _j, b in shapes)
+    y1 = max(b[3] for _j, b in shapes)
+    return (x0, y0), (x1 - x0, y1 - y0)
+
+
+def _edge_bbox(root):
+    """Union bounding box of every Edge.Cuts graphic (the historic contract:
+    Board.origin_mm / size_mm). On a panel this box is mostly not board —
+    see outline_regions."""
+    return _edge_bbox_of(_edge_shapes(root))
+
+
+def outline_regions(shapes, tol_mm=REGION_JOIN_TOL_MM):
+    """Disjoint outline regions of a board: [OutlineRegion], one per PHYSICAL
+    board in the file.
+
+    Two Edge.Cuts graphics belong to the same region when they share a vertex
+    (within tol_mm) — the connected components of the outline graph. That
+    alone would also split a board's INNER features into regions of their
+    own: a milled slot, a routed cutout, a mounting hole drawn as an
+    Edge.Cuts circle are each a closed loop touching nothing. So a component
+    whose bbox lies entirely inside another component's bbox is absorbed into
+    it: an inner feature is part of the board it is cut out of, not a board
+    of its own.
+
+    The known false merge is the inverse case — a small daughterboard
+    panelised INSIDE a larger board's cutout would be absorbed by it. That is
+    rare, and the conservative direction: it under-reports regions rather
+    than splitting one real board in two.
+
+    Returned sorted by (y0, x0) so region indices are stable across loads.
+    """
+    if not shapes:
+        return []
+
+    parent = list(range(len(shapes)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    q = max(float(tol_mm), 1e-9)
+    pts = [(x, y, i) for i, (joints, _b) in enumerate(shapes) for x, y in joints]
+    buckets = {}
+    for k, (x, y, _i) in enumerate(pts):
+        buckets.setdefault((math.floor(x / q), math.floor(y / q)), []).append(k)
+    for x, y, i in pts:
+        cx, cy = math.floor(x / q), math.floor(y / q)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for m in buckets.get((cx + dx, cy + dy), ()):
+                    x2, y2, j = pts[m]
+                    if i != j and abs(x - x2) <= tol_mm and abs(y - y2) <= tol_mm:
+                        union(i, j)
+
+    comps = {}
+    for i in range(len(shapes)):
+        comps.setdefault(find(i), []).append(i)
+    boxes = []
+    for members in comps.values():
+        bs = [shapes[m][1] for m in members]
+        boxes.append([min(b[0] for b in bs), min(b[1] for b in bs),
+                      max(b[2] for b in bs), max(b[3] for b in bs),
+                      len(members)])
+
+    def area(b):
+        return max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0)
+
+    # Absorb inner features. Strictly-smaller-area first so two identical
+    # boxes never absorb each other into nothing.
+    merged = True
+    while merged and len(boxes) > 1:
+        merged = False
+        for a in range(len(boxes)):
+            for b in range(len(boxes)):
+                if a == b:
+                    continue
+                A, B = boxes[a], boxes[b]
+                inside = (A[0] >= B[0] - tol_mm and A[1] >= B[1] - tol_mm
+                          and A[2] <= B[2] + tol_mm and A[3] <= B[3] + tol_mm)
+                if inside and (area(A) < area(B) - 1e-9 or a > b):
+                    B[4] += A[4]
+                    boxes.pop(a)
+                    merged = True
+                    break
+            if merged:
+                break
+
+    boxes.sort(key=lambda b: (b[1], b[0]))
+    return [OutlineRegion(origin_mm=(b[0], b[1]),
+                          size_mm=(b[2] - b[0], b[3] - b[1]), shapes=b[4])
+            for b in boxes]
 
 
 def _collect_net_names(node, out):
@@ -403,7 +583,9 @@ def load_board(path: str) -> Board:
         vias.append(Via(a[0], a[1], dr[0] if dr else 0.0,
                         sz[0] if sz else 0.0, code))
 
-    origin, size = _edge_bbox(root)
+    shapes = _edge_shapes(root)
+    origin, size = _edge_bbox_of(shapes)
     return Board(path=path, origin_mm=origin, size_mm=size,
                  copper_layers=copper_layers, nets=nets,
-                 pads=pads, tracks=tracks, vias=vias)
+                 pads=pads, tracks=tracks, vias=vias,
+                 outline_regions=tuple(outline_regions(shapes)))
