@@ -1438,13 +1438,18 @@ def _list_regions(board_path):
     """Print the board's outline regions (the --area indices) and each net that
     spans more than one, then return 0 — the same map pathfinder --list-regions
     prints, so the design thread picks an --area N from one place."""
-    from lattice import board_outline_regions
+    from lattice import board_outline_regions, board_outline_regions_all
     from pathfinder import cross_region_nets, pad_region_index
     brd = load_board(board_path)
     regions = board_outline_regions(brd)
+    dropped = len(board_outline_regions_all(brd)) - len(regions)
     print(f"board       : {os.path.basename(board_path)}")
     print(f"areas       : {len(regions)} disjoint Edge.Cuts outline(s) "
           f"(use --area N)")
+    if dropped:
+        print(f"  note      : {dropped} degenerate outline(s) (zero width/height) "
+              f"dropped — likely a stray Edge.Cuts line; check your board if you "
+              f"expected {len(regions) + dropped} areas")
     for i, r in enumerate(regions):
         n = sum(1 for p in brd.pads if pad_region_index([r], p) is not None)
         print(f"  area {i}: origin ({r.origin_mm[0]:.2f}, {r.origin_mm[1]:.2f}) "

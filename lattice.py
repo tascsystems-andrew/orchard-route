@@ -387,13 +387,31 @@ class Clearance:
                                   # resolved per net class; else == inflate_mm
 
 
-def board_outline_regions(board):
+MIN_REGION_MM = 1.0  # a real board area is at least this on each side
+
+
+def board_outline_regions(board, min_side_mm=MIN_REGION_MM):
     """[OutlineRegion-like] for a board, never empty.
 
     Falls back to ONE region spanning origin_mm/size_mm for boards whose
     outline could not be read and for the synthetic Boards that tests and
     region.py build by hand — so every caller can loop over regions without
-    branching on whether the board knew about them."""
+    branching on whether the board knew about them.
+
+    Degenerate outlines (a stray Edge.Cuts line or point — zero width or
+    height) cannot hold a board and are dropped, because a zero-area region
+    breaks `--area` and reads as a fourth "board" that isn't one. Callers
+    that want to warn the user about the stray graphic use
+    `board_outline_regions_all()` to see what was filtered."""
+    kept = [r for r in board_outline_regions_all(board)
+            if r.size_mm[0] >= min_side_mm and r.size_mm[1] >= min_side_mm]
+    if kept:
+        return kept
+    return board_outline_regions_all(board)  # all degenerate: don't lie, return them
+
+
+def board_outline_regions_all(board):
+    """Every outline region including degenerate ones (see board_outline_regions)."""
     regions = getattr(board, "outline_regions", None)
     if regions:
         return list(regions)
