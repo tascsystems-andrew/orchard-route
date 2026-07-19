@@ -1,14 +1,16 @@
-"""Integration smoke: first real-board route through the whole stack.
+"""Integration smoke: first fixture-board route through the whole stack.
 
 L1 (board.py) -> L2 (lattice.py) -> L4 (batch_sssp.py) -> backtrace, end to end
-on the live Voxy board (READ-ONLY — the file is never written). One 2-pad net is
-routed pad-to-pad and the recovered path is measured in millimetres.
+on the committed gain-stage fixture (READ-ONLY — the file is never written).
+One 2-pad net is routed pad-to-pad and the recovered path is measured in
+millimetres.
 
 DELIBERATE LIMITATION: obstacles and other nets are ignored. The lattice is
 unblocked, so the route may pass straight through other pads and tracks. This
 run only proves the layers compose on real data; legality comes later with
 per-net masking (see lattice.py's node_owner).
 """
+import os
 import time
 
 import numpy as np
@@ -18,7 +20,8 @@ from backtrace import extract_path
 from board import load_board
 from lattice import lattice_for_board
 
-VOXY = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
+BOARD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "fixtures", "gain_stage.kicad_pcb")
 
 
 def pick_two_pad_net(board, lat):
@@ -53,7 +56,7 @@ def path_length_mm(lat, path):
 
 def main():
     t0 = time.perf_counter()
-    board = load_board(VOXY)
+    board = load_board(BOARD)
     t_load = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -75,7 +78,7 @@ def main():
     t_back = time.perf_counter() - t0
 
     length = path_length_mm(lat, path)
-    print(f"board   : {VOXY.split('/')[-1]}  "
+    print(f"board   : {os.path.basename(BOARD)}  "
           f"({len(board.pads)} pads, {len(board.nets)} nets)")
     print(f"lattice : {lat.W}x{lat.H}x{lat.L}  N={N:,}  E={lat.col_idx.size:,}  "
           f"pitch {lat.pitch_mm} mm on {lat.layer_names}")

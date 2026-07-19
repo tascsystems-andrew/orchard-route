@@ -1,7 +1,8 @@
 """Tests for lattice.py: structure, blocking, build speed, GPU smoke, real board.
 
 Run: .venv/bin/python test_lattice.py
-The board test self-skips if board.py (being written concurrently) is absent.
+The board test reads the committed gain-stage fixture (fixtures/gain_stage
+.kicad_pcb) — every net with pads must claim lattice nodes.
 """
 import math
 import os
@@ -11,7 +12,8 @@ import numpy as np
 
 from lattice import build_lattice, clearance_map, lattice_for_board, pad_ring_nodes
 
-VOXY = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "fixtures", "gain_stage.kicad_pcb")
 
 
 def csr_entries(W, H, L):
@@ -303,15 +305,8 @@ def test_clearance_map():
 
 
 def test_board():
-    try:
-        from board import load_board
-    except ImportError:
-        print("board: SKIP (board.py not present yet)")
-        return
-    if not os.path.exists(VOXY):
-        print("board: SKIP (Voxy .kicad_pcb not found)")
-        return
-    board = load_board(VOXY)
+    from board import load_board
+    board = load_board(FIXTURE)
     t0 = time.perf_counter()
     lat, pad_nodes, node_owner = lattice_for_board(board, pitch_mm=1.0)
     dt = time.perf_counter() - t0

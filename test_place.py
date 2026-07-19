@@ -18,20 +18,23 @@ What must hold (the task contract):
   unconstrained run;
 - pool pairwise distinct (max per-ref displacement > one grid step).
 
-Plus the board plumbing: parts_from_board must reproduce test_board.py's
-hand-derived numbers for the rotated valve on the hifi board (READ-ONLY),
-and net_weights_from_project must flow through writeback's class loader.
+Plus the board plumbing: parts_from_board must reproduce hand-derived numbers
+for a rotated valve on the committed amp_board fixture (fixtures/amp_board
+.kicad_pcb — this test OWNS it, replacing the old read of Andrew's live hifi
+board), and net_weights_from_project must flow through writeback's class loader.
 
 Run: .venv/bin/python test_place.py
 """
 import math
+import os
 
 from board import Pad
 from constraints import evaluate_constraints, parse_constraints
 from place import (COURTYARD_MARGIN_MM, Part, anneal_region, part_courtyard,
                    parts_from_board, net_weights_from_project)
 
-HIFI = "/Users/andrew/Documents/Guitar/Voxy/Voxy/hifi tube pre.kicad_pcb"
+AMP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   "fixtures", "amp_board.kicad_pcb")
 
 failures = []
 
@@ -236,31 +239,34 @@ if __name__ == "__main__":
         check("no feasible starting placement" in str(e),
               f"impossible fence raises with reasons ({e})")
 
-    print("=== parts_from_board against the hifi board (READ-ONLY) ===")
-    pb = parts_from_board(HIFI, ["5755#1"])
+    print("=== parts_from_board against the amp_board fixture ===")
+    # 5755#1 is the first of three duplicated "5755" valves: a 9-pad 3x3 grid
+    # at (20, 20) rotated -90. KiCad's -90 maps local (ox, oy) to
+    # (fx - oy, fy + ox), so its corner pad 1 (at -2 -2 216) lands at
+    # (20 + 2, 20 - 2) = (22, 18) — hand-computed, independent of the parser.
+    pb = parts_from_board(AMP, ["5755#1"])
     v = pb["5755#1"]
     check(len(v.pads) == 9, f"5755#1 carries its 9 pads ({len(v.pads)})")
-    check((abs(v.x_mm - 78.241278) < 1e-9 and abs(v.y_mm - 144.721998) < 1e-9
+    check((abs(v.x_mm - 20.0) < 1e-9 and abs(v.y_mm - 20.0) < 1e-9
            and v.rot_deg == -90.0),
-          "5755#1 at the file's (78.241278, 144.721998, -90)")
-    p1 = min(v.pads, key=lambda p: math.hypot(p.x_mm - 75.890053,
-                                              p.y_mm - 146.512006))
-    check(abs(p1.x_mm - 75.890053) < 1e-4 and abs(p1.y_mm - 146.512006) < 1e-4,
-          "pad 1 at test_board.py's hand-computed (75.890053, 146.512006)")
+          "5755#1 at the file's (20, 20, -90)")
+    p1 = min(v.pads, key=lambda p: math.hypot(p.x_mm - 22.0, p.y_mm - 18.0))
+    check(abs(p1.x_mm - 22.0) < 1e-4 and abs(p1.y_mm - 18.0) < 1e-4,
+          "pad 1 at hand-computed (22, 18) via the -90 transform")
     cy = part_courtyard(v)
     check(cy[0] < v.x_mm < cy[2] and cy[1] < v.y_mm < cy[3],
           f"valve courtyard proxy encloses its center "
           f"({', '.join(f'{c:.2f}' for c in cy)})")
-    allp = parts_from_board(HIFI)
-    check(len(allp) == 116, f"refs=None loads all 116 footprints ({len(allp)})")
-    check(sum(len(p.pads) for p in allp.values()) == 230,
-          "pad slices cover the board's 230 pads exactly once")
+    allp = parts_from_board(AMP)
+    check(len(allp) == 8, f"refs=None loads all 8 footprints ({len(allp)})")
+    check(sum(len(p.pads) for p in allp.values()) == 36,
+          "pad slices cover the board's 36 pads exactly once")
 
     print("=== net weights via writeback's class loader ===")
-    w = net_weights_from_project(HIFI, ["GND", "B+250"])
+    w = net_weights_from_project(AMP, ["GND", "B+250"])
     check(w == {"GND": 1.0, "B+250": 1.0},
-          f"hifi project (Default class only) -> weight 1.0 everywhere ({w})")
-    w2 = net_weights_from_project(HIFI, ["GND"], class_weights={"Default": 2.5})
+          f"amp project (Default class only) -> weight 1.0 everywhere ({w})")
+    w2 = net_weights_from_project(AMP, ["GND"], class_weights={"Default": 2.5})
     check(w2 == {"GND": 2.5}, f"class_weights override flows through ({w2})")
     check(net_weights_from_project("/nonexistent/x.kicad_pcb", ["GND"]) == {},
           "no project file -> empty map (all nets weigh 1.0)")

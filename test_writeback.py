@@ -1,8 +1,9 @@
 """Writeback validation: route a real board, write the copy, prove KiCad eats it.
 
-The fixture is Andrew's live hifi tube pre board (READ-ONLY — never write to
-it; a before/after hash enforces that at the end). Three independent judges
-look at the routed copy:
+The fixture is the committed amp_board.kicad_pcb (READ-ONLY — never write to
+it; a before/after hash enforces that at the end; this test OWNS it, replacing
+the old read of Andrew's live hifi board). Three independent judges look at the
+routed copy:
 
 1. board.py re-parses it — track/via counts must be original + emitted, and
    every appended segment's net NAME must resolve to a positive code in the
@@ -15,18 +16,18 @@ look at the routed copy:
 3. sha256 of the original file must be identical before and after.
 
 Per-net widths get three more judges, on the same routed geometry (no
-re-route): the sibling hifi .kicad_pro drives load_net_class_widths and the
-result must match the JSON's own classes (or fall back cleanly if the file
+re-route): the sibling amp_board .kicad_pro drives load_net_class_widths and
+the result must match the JSON's own classes (or fall back cleanly if the file
 ever disappears); a --width-map style override + pitch cap is applied
 programmatically, a second copy written, and the reparsed per-net
-track/via numbers must equal the resolved triples; the Voxy-arduino
-.kicad_pro exercises the parse-only path against synthetic net names (no
-Voxy route — far too slow here). A synthetic .kicad_pro written to out/
-covers what the live projects don't contain: netclass_patterns globs,
-explicit assignments beating patterns, priority, and per-key fallback to
-the Default class. The .kicad_pro files are hash-guarded like the board.
+track/via numbers must equal the resolved triples; a second committed
+.kicad_pro exercises the parse-only path against synthetic net names. A
+synthetic .kicad_pro written to out/ covers what the sibling projects don't
+contain: netclass_patterns globs, explicit assignments beating patterns,
+priority, and per-key fallback to the Default class. The .kicad_pro files are
+hash-guarded like the board.
 
-write_moved_copy gets the same three-judge treatment on the SAME hifi board
+write_moved_copy gets the same three-judge treatment on the SAME amp board
 (no route needed): footprints are moved AND rotated in a copy, board.py
 re-parses it and every pad of every moved footprint must land at the
 delta-transformed position/rotation to 1e-6 (one anchor is hand-computed,
@@ -54,20 +55,21 @@ from writeback import (write_routed_copy, write_moved_copy, board_footprints,
                        parse_width_map, apply_width_map, cap_track_widths,
                        DEFAULT_TRACK_MM, DEFAULT_VIA_MM, DEFAULT_DRILL_MM)
 
-BOARD = "/Users/andrew/Documents/Guitar/Voxy/Voxy/hifi tube pre.kicad_pcb"
-VOXY_PRO = "/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pro"
+_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+BOARD = os.path.join(_FIXTURES, "amp_board.kicad_pcb")
+SECOND_PRO = os.path.join(_FIXTURES, "second_project.kicad_pro")
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
-OUT = os.path.join(OUT_DIR, "hifi-routed.kicad_pcb")
-OUT_W = os.path.join(OUT_DIR, "hifi-routed-widths.kicad_pcb")
+OUT = os.path.join(OUT_DIR, "amp-routed.kicad_pcb")
+OUT_W = os.path.join(OUT_DIR, "amp-routed-widths.kicad_pcb")
 FIXTURE_PRO = os.path.join(OUT_DIR, "classes-fixture.kicad_pro")
-DRC_RPT = os.path.join(OUT_DIR, "hifi-routed-drc.rpt")
+DRC_RPT = os.path.join(OUT_DIR, "amp-routed-drc.rpt")
 KICAD_CLI = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
 
 PICO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench",
                     "boards", "rpi-pico-vga", "pico_vga_sd_aud.kicad_pcb")
-OUT_M = os.path.join(OUT_DIR, "hifi-moved.kicad_pcb")
+OUT_M = os.path.join(OUT_DIR, "amp-moved.kicad_pcb")
 OUT_M5 = os.path.join(OUT_DIR, "pico-moved.kicad_pcb")
-DRC_M_RPT = os.path.join(OUT_DIR, "hifi-moved-drc.rpt")
+DRC_M_RPT = os.path.join(OUT_DIR, "amp-moved-drc.rpt")
 # the synthetic KiCad 5 source lives in its OWN subdir so writing its moved
 # copy to out/ does not trip the same-directory refusal
 SYN_BOARD = os.path.join(OUT_DIR, "synthetic-src", "module-form.kicad_pcb")
@@ -168,12 +170,12 @@ def check_moved_board(src_path, moved_path, placements, label):
 
 
 def run_move_tests():
-    print("=== write_moved_copy: move + rotate on the hifi board ===")
-    hash_hifi = sha256(BOARD)
+    print("=== write_moved_copy: move + rotate on the amp_board fixture ===")
+    hash_amp = sha256(BOARD)
     with open(BOARD, encoding="utf-8") as f:
         recs = board_footprints(f.read())
-    check(len(recs) == 116 and sum(r.n_pads for r in recs) == 230,
-          f"scanner sees 116 footprints / 230 pads "
+    check(len(recs) == 8 and sum(r.n_pads for r in recs) == 36,
+          f"scanner sees 8 footprints / 36 pads "
           f"({len(recs)} / {sum(r.n_pads for r in recs)})")
     try:
         resolve_footprint(recs, "5755")
@@ -199,17 +201,17 @@ def run_move_tests():
     }
     write_moved_copy(BOARD, OUT_M, placements)
     check(os.path.exists(OUT_M), f"moved copy written to {OUT_M}")
-    mb = check_moved_board(BOARD, OUT_M, placements, "hifi")
+    mb = check_moved_board(BOARD, OUT_M, placements, "amp")
 
     # hand-computed anchor (NOT derived through any parser): valve pad 1 is
-    # (at 1.790008 2.351225 216) in-file; at (120, 60) rot 180 that is
-    # (120 - 1.790008, 60 - 2.351225) and angle 216 + 270 - 360 = 126
+    # (at -2 -2 216) in-file; at (120, 60) rot 180 (rotation delta 270) that
+    # is (120 + 2, 60 + 2) and angle 216 + 270 - 360 = 126
     anchor = [p for p in mb.pads
-              if abs(p.x_mm - 118.209992) < 1e-6
-              and abs(p.y_mm - 57.648775) < 1e-6
+              if abs(p.x_mm - 122.0) < 1e-6
+              and abs(p.y_mm - 62.0) < 1e-6
               and abs(p.rotation_deg - 126.0) < 1e-6]
     check(len(anchor) == 1,
-          "hand-computed anchor pad at (118.209992, 57.648775) rot 126")
+          "hand-computed anchor pad at (122, 62) rot 126")
     with open(OUT_M, encoding="utf-8") as f:
         mtext = f.read()
     check("(at 120 60 180)" in mtext, "valve (at 120 60 180) written")
@@ -290,8 +292,8 @@ def run_move_tests():
     except ValueError as e:
         check("refusing to write" in str(e),
               f"write into the source board's directory refused ({e})")
-    check(sha256(BOARD) == hash_hifi,
-          "hifi board bytes identical before and after the move tests")
+    check(sha256(BOARD) == hash_amp,
+          "amp board bytes identical before and after the move tests")
 
     print("=== load_net_class_names shares the widths resolution ===")
     with open(FIXTURE_PRO, "w", encoding="utf-8") as f:
@@ -323,7 +325,7 @@ if __name__ == "__main__":
         if os.path.exists(p):
             os.remove(p)
     hash_before = sha256(BOARD)
-    ro_pros = [p for p in (project_file_for(BOARD), VOXY_PRO)
+    ro_pros = [p for p in (project_file_for(BOARD), SECOND_PRO)
                if p and os.path.isfile(p)]
     pro_hashes = {p: sha256(p) for p in ro_pros}
 
@@ -396,7 +398,7 @@ if __name__ == "__main__":
         for line in summary:
             print(f"    {line}")
 
-    print("=== net classes from the hifi .kicad_pro ===")
+    print("=== net classes from the amp_board .kicad_pro ===")
     pro = project_file_for(BOARD)
     if pro:
         check(True, f"sibling project file found: {os.path.basename(pro)}")
@@ -408,7 +410,7 @@ if __name__ == "__main__":
               "loader returns a triple for every net code")
         if by_name and not (ns.get("netclass_assignments")
                             or ns.get("netclass_patterns")):
-            # the live Voxy-family projects: one Default class, no maps —
+            # the amp fixture's project: one Default class, no maps —
             # every net must resolve to the Default class's own numbers
             d = by_name.get("Default", {})
             expect = (float(d.get("track_width") or DEFAULT_TRACK_MM),
@@ -420,23 +422,23 @@ if __name__ == "__main__":
         proj_widths = {}
         check(True, "no sibling .kicad_pro -> clean fallback to defaults")
 
-    print("=== Voxy-arduino .kicad_pro, parse-only ===")
-    if os.path.isfile(VOXY_PRO):
-        with open(VOXY_PRO, encoding="utf-8") as f:
+    print("=== a second .kicad_pro, parse-only ===")
+    if os.path.isfile(SECOND_PRO):
+        with open(SECOND_PRO, encoding="utf-8") as f:
             vd_cls = {c.get("name"): c for c in
                       (json.load(f).get("net_settings") or {})
                       .get("classes") or []}.get("Default", {})
         # synthetic net table: the point is the parsing path, not a route
         fake_nets = {0: "", 1: "GND", 2: "B+250", 3: "Net-(U1-Pad4)"}
-        vw = load_net_class_widths(VOXY_PRO, fake_nets)
+        vw = load_net_class_widths(SECOND_PRO, fake_nets)
         v_expect = (float(vd_cls.get("track_width") or DEFAULT_TRACK_MM),
                     float(vd_cls.get("via_diameter") or DEFAULT_VIA_MM),
                     float(vd_cls.get("via_drill") or DEFAULT_DRILL_MM))
         check(set(vw) == set(fake_nets) and all(w == v_expect
                                                 for w in vw.values()),
-              f"Voxy project parses; every net -> Default class {v_expect}")
+              f"second project parses; every net -> Default class {v_expect}")
     else:
-        check(True, "Voxy .kicad_pro absent — parse-only check skipped")
+        check(True, "second .kicad_pro absent — parse-only check skipped")
 
     print("=== synthetic .kicad_pro: patterns, assignments, priority ===")
     with open(FIXTURE_PRO, "w", encoding="utf-8") as f:

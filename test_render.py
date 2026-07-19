@@ -1,4 +1,4 @@
-"""Tests for render.py: board-free fake scene, geometry conversion, real board.
+"""Tests for render.py: board-free fake scene, geometry conversion, real fixture.
 
 Run: .venv/bin/python test_render.py
 Self-contained — builds a hand-made RouteResult rather than waiting on
@@ -12,8 +12,9 @@ from board import Pad
 from lattice import build_lattice
 from render import RouteResult, paths_to_tracks, render_from_cli, render_svg
 
-OUT = "/Users/andrew/Code/mlx-router/out/test_render.svg"
-HIFI = "/Users/andrew/Documents/Guitar/Voxy/Voxy/hifi tube pre.kicad_pcb"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(_HERE, "out", "test_render.svg")
+FIXTURE = os.path.join(_HERE, "fixtures", "gain_stage.kicad_pcb")
 
 
 @dataclass
@@ -82,11 +83,9 @@ def test_render_fake_scene():
 
 
 def test_render_from_cli():
-    if not os.path.exists(HIFI):
-        print("render_from_cli: SKIP (hifi board not found)")
-        return
-    out = "/Users/andrew/Code/mlx-router/out/test_render_board.svg"
-    render_from_cli(HIFI, out, 1.0, ["F.Cu", "B.Cu"])
+    out = os.path.join(_HERE, "out", "test_render_board.svg")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    render_from_cli(FIXTURE, out, 1.0, ["F.Cu", "B.Cu"])
     ET.parse(out)
     print(f"render_from_cli: PASS  ({os.path.getsize(out)} bytes)")
 

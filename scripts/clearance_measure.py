@@ -21,14 +21,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "out", "geo")
 
 BOARDS = {
-    "hifi": ("/Users/andrew/Documents/Guitar/Voxy/Voxy/hifi tube pre.kicad_pcb",
+    # committed fixtures (amp carries a sibling .kicad_pro; gain does not)
+    "amp": (os.path.join(ROOT, "fixtures", "amp_board.kicad_pcb"),
+            0.5, "F.Cu,B.Cu"),
+    "gain": (os.path.join(ROOT, "fixtures", "gain_stage.kicad_pcb"),
              0.5, "F.Cu,B.Cu"),
+    # third-party bench boards (gitignored, see bench/boards/SOURCES.md)
     "pic": (os.path.join(ROOT, "bench/boards/kicad-demo-pic-programmer/"
                                "pic_programmer.kicad_pcb"), 0.5, "F.Cu,B.Cu"),
     "bitsy": (os.path.join(ROOT, "bench/boards/icebreaker-bitsy-v1.1c/"
                                  "icebreaker-bitsy.kicad_pcb"), 0.25, "F.Cu,B.Cu"),
-    "voxy": ("/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb",
-             0.5, "F.Cu,B.Cu"),
 }
 
 
@@ -74,7 +76,7 @@ def main(argv):
         os.remove(out_pcb)
         t0 = time.perf_counter()
         proc = subprocess.run(
-            [os.path.join(ROOT, ".venv/bin/python"),
+            [sys.executable,
              os.path.join(ROOT, "writeback.py"), src, out_pcb,
              "--pitch", str(pitch), "--layers", layers],
             capture_output=True, text=True, cwd=ROOT)
