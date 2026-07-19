@@ -70,6 +70,12 @@ class RouteResult:
     geometry_note: str = None   # its one-line summary (the contract, printed
                                 # every run — the tool states its own limits)
     geometry_warnings: list = None   # loud numeric complaints, may be empty
+    fab_profile: object = None    # fab.FabProfile in force (always set; the
+                                  # `none` profile when --fab was not given)
+    fab_note: str = None          # its one-line summary, printed every run
+    fab_violations: list = None   # fab.Violation list, may be empty
+    fab_warnings: list = None     # loud strings: violations, staleness,
+                                  # enforce changes, unfittable pitches
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -1038,7 +1044,7 @@ def net_pads_for_board(board, lat, node_owner=None):
 def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
                 track_width_mm=None, via_size_mm=None, via_exclusion=True,
-                **kwargs):
+                fab=None, fab_enforce=False, **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
 
     directions/via_cost/dir_penalty go to lattice_for_board (board-routing
@@ -1058,11 +1064,34 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     router) and whether 45-degree smoothing is geometrically legal at this
     pitch. It also VERIFIES the orthogonal track-track claim numerically and
     puts the numbers on RouteResult.geometry_warnings when a board's pitch is
-    too fine for its own track width. Nothing here is silent."""
+    too fine for its own track width. Nothing here is silent.
+
+    fab: name of a fab.py manufacturing profile ("jlcpcb-standard", ...).
+    Defaults to None, which loads the `none` profile and changes nothing — a
+    run only acquires manufacturing limits when someone asks for them. When a
+    real profile is active it does two separate jobs: it FILLS copper numbers
+    the project's net classes leave unsaid (an explicit argument still wins,
+    and so does any net class the user actually wrote), and it CHECKS the
+    resolved geometry against the house's floor. Violations are reported, not
+    corrected. fab_enforce=True additionally snaps the offending numbers to
+    the profile's cheapest legal values and records every substitution on
+    RouteResult.fab_warnings — the tool never changes the user's copper
+    quietly."""
+    import fab as fab_mod
+    from dataclasses import replace as _replace
+
     from board import load_board
     from geometry import resolve_board_geometry
     from lattice import (DEFAULT_CLEARANCE_MM, clearance_map, lattice_for_board,
                          pad_overlap_allowances)
+
+    profile = fab_mod.load_profile(fab)
+    fab_warnings = []
+    stale = profile.stale_warning()
+    if stale:
+        fab_warnings.append(stale)
+    clearance_mm, track_width_mm, via_size_mm, fab_notes = fab_mod.fill_defaults(
+        board_path, profile, pitch_mm, clearance_mm, track_width_mm, via_size_mm)
 
     t0 = time.perf_counter()
     brd = load_board(board_path)
@@ -1071,6 +1100,27 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                                  clearance_mm=clearance_mm,
                                  track_width_mm=track_width_mm,
                                  via_size_mm=via_size_mm)
+
+    outcome = fab_mod.reconcile(geo, profile, pitch_mm, enforce=fab_enforce)
+    fab_warnings += fab_mod.violation_warnings(outcome.violations, profile)
+    if outcome.changes:
+        geo = _replace(
+            geo,
+            track_width_mm=outcome.track_mm if outcome.track_mm is not None
+            else geo.track_width_mm,
+            clearance_mm=outcome.clearance_mm if outcome.clearance_mm is not None
+            else geo.clearance_mm,
+            via_size_mm=outcome.via_size_mm if outcome.via_size_mm is not None
+            else geo.via_size_mm)
+        # The clearance model reads these two directly; keep them in step with
+        # the geometry contract or the router would enforce the OLD numbers.
+        clearance_mm = geo.clearance_mm
+        track_width_mm = geo.track_width_mm
+        fab_warnings.append(
+            f"--fab-enforce changed this board's copper to satisfy "
+            f"{profile.name}: " + "; ".join(outcome.changes))
+    fab_warnings += outcome.notes
+
     t0 = time.perf_counter()
     lat, pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
                                                    layer_names=layer_names,
@@ -1095,6 +1145,11 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     res.geometry = geo
     res.geometry_note = geo.summary()
     res.geometry_warnings = geo.warnings()
+    res.fab_profile = profile
+    res.fab_violations = fab_mod.check(geo, profile)
+    res.fab_note = fab_mod.summary_line(geo, profile,
+                                        violations=res.fab_violations)
+    res.fab_warnings = fab_warnings + fab_notes
     return brd, lat, res
 
 
@@ -1148,14 +1203,29 @@ def main(argv=None):
     ap.add_argument("--clearance", type=float, default=None,
                     help="copper-to-foreign-pad / board-edge spacing in mm "
                          "(default 0.2; 0 disables the clearance model)")
+    ap.add_argument("--fab", default="none",
+                    help="manufacturing profile to resolve defaults from and "
+                         "check against (default none = no constraints). "
+                         "See `python fab.py` for the list.")
+    ap.add_argument("--fab-enforce", action="store_true",
+                    help="snap copper geometry to the --fab profile's "
+                         "cheapest legal values, naming every change "
+                         "(without this, violations only warn)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
+
+    import fab as fab_mod
+    try:
+        fab_mod.load_profile(args.fab)
+    except fab_mod.UnknownProfile as e:
+        ap.error(str(e))
 
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch, layer_names=layers,
                                 directions=args.directions, via_cost=args.via_cost,
                                 dir_penalty=args.dir_penalty,
                                 clearance_mm=args.clearance,
                                 via_exclusion=not args.no_via_exclusion,
+                                fab=args.fab, fab_enforce=args.fab_enforce,
                                 refine_passes=0 if args.no_refine else 2,
                                 smooth=not args.no_smooth)
 
@@ -1170,7 +1240,10 @@ def main(argv=None):
           f"{len(routable - failed_nets)} fully routed | {len(failed_nets)} with failures")
     print(f"connections : {conn_total}  ({len(res.conflicts)} pad-snap conflicts)")
     print(f"geometry    : {res.geometry_note}")
+    print(f"fab         : {res.fab_note}")
     for w in (res.geometry_warnings or []):
+        print(f"WARNING     : {w}")
+    for w in (res.fab_warnings or []):
         print(f"WARNING     : {w}")
     print(f"iterations  : {res.iterations}")
     print(f"overuse     : {res.overuse_curve}")

@@ -633,12 +633,27 @@ def main(argv=None):
     ap.add_argument("--max-width", type=float, default=None,
                     help="cap emitted track widths at this many mm "
                          "(default: the lattice pitch)")
+    ap.add_argument("--fab", default="none",
+                    help="manufacturing profile to resolve emission defaults "
+                         "from and check against (default none = no "
+                         "constraints). See `python fab.py` for the list.")
+    ap.add_argument("--fab-enforce", action="store_true",
+                    help="snap copper geometry to the --fab profile's "
+                         "cheapest legal values, naming every change "
+                         "(without this, violations only warn)")
     args = ap.parse_args(argv)
     layers = [s.strip() for s in args.layers.split(",") if s.strip()]
+
+    import fab as fab_mod
+    try:
+        fab_profile = fab_mod.load_profile(args.fab)
+    except fab_mod.UnknownProfile as e:
+        ap.error(str(e))
 
     from pathfinder import route_board, paths_to_tracks
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                 layer_names=layers,
+                                fab=args.fab, fab_enforce=args.fab_enforce,
                                 via_exclusion=not args.no_via_exclusion)
     # Prefer the router's smoothed geometry (45-degree segments emit as plain
     # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
@@ -650,17 +665,68 @@ def main(argv=None):
 
     pro = project_file_for(args.board)
     widths = load_net_class_widths(pro, brd.nets) if pro else {}
+
+    # Emission defaults: the scalars write_routed_copy falls back to for any
+    # net no class and no --width-map claims. A fab profile replaces them with
+    # its cheapest legal copper — but only the fallback. A net class the user
+    # wrote is a design decision and still wins; the fab check below is what
+    # tells them if that decision is unbuildable.
+    emit = [DEFAULT_TRACK_MM, DEFAULT_VIA_MM, DEFAULT_DRILL_MM]
+    fab_lines = []          # printed with the geometry block, not here
+    if fab_profile.constrains:
+        try:
+            rec = fab_mod.recommend(fab_profile, args.pitch)
+            emit = [rec.track_mm, rec.via_size_mm, rec.via_drill_mm]
+            if not widths:
+                fab_lines.append(
+                    f"fab defaults: track {_fmt(rec.track_mm)} "
+                    f"via {_fmt(rec.via_size_mm)}/{_fmt(rec.via_drill_mm)} mm "
+                    f"from {fab_profile.name} (no net classes in this project)")
+        except fab_mod.FabPitchError:
+            pass    # route_board already reported it on res.fab_warnings
+
     if args.width_map:
         widths = apply_width_map(widths, brd.nets,
-                                 parse_width_map(args.width_map))
+                                 parse_width_map(args.width_map),
+                                 track_width_mm=emit[0], via_size_mm=emit[1],
+                                 via_drill_mm=emit[2])
     max_width = args.max_width if args.max_width is not None else args.pitch
     widths, capped = cap_track_widths(widths, brd.nets, max_width)
     if capped:
         print(f"WARNING     : track width capped at {_fmt(max_width)} mm "
               f"(grid overlap) for {len(capped)} net(s): {', '.join(capped)}")
 
+    # Check what will actually be EMITTED, not just what the router modelled.
+    # A fab floor is a MINIMUM, so the number that can violate it is the
+    # NARROWEST track and the SMALLEST via any net resolves to — the opposite
+    # end of the distribution from the one geometry.py cares about (which asks
+    # whether the WIDEST copper fits the grid). Both checks are real; they
+    # just interrogate different tails.
+    emit_drill = min([d for _, _, d in widths.values()] or [emit[2]])
+    fab_note, fab_warnings = None, []
+    if fab_profile.constrains:
+        from geometry import CopperGeometry
+        emitted = CopperGeometry(
+            pitch_mm=args.pitch,
+            track_width_mm=min([w for w, _, _ in widths.values()] or [emit[0]]),
+            clearance_mm=res.geometry.clearance_mm if res.geometry else 0.2,
+            via_size_mm=min([v for _, v, _ in widths.values()] or [emit[1]]))
+        emit_violations = fab_mod.check(emitted, fab_profile,
+                                        via_drill_mm=emit_drill)
+        fab_note = fab_mod.summary_line(emitted, fab_profile,
+                                        via_drill_mm=emit_drill,
+                                        violations=emit_violations)
+        fab_warnings = fab_mod.violation_warnings(emit_violations, fab_profile)
+    # route_board checked the copper it MODELLED; the block above checks the
+    # copper about to be WRITTEN. When they reach the same verdict, say it
+    # once — a duplicated warning teaches the reader to skim warnings.
+    seen = set(fab_warnings)
+    fab_warnings += [w for w in (getattr(res, "fab_warnings", None) or [])
+                     if w not in seen]
+
     write_routed_copy(args.board, args.out, tracks, vias, brd.nets,
-                      widths=widths)
+                      track_width_mm=emit[0], via_size_mm=emit[1],
+                      via_drill_mm=emit[2], widths=widths)
     failed_nets = {n for n, _ in res.failed}
     routable = set(res.net_paths) | failed_nets
     print(f"nets        : {len(routable)} routable | "
@@ -668,7 +734,13 @@ def main(argv=None):
           f"{len(failed_nets)} with failures")
     if getattr(res, "geometry_note", None):
         print(f"geometry    : {res.geometry_note}")
+    if fab_note:
+        print(f"fab         : {fab_note}")
+    for line in fab_lines:
+        print(line)
     for w in (getattr(res, "geometry_warnings", None) or []):
+        print(f"WARNING     : {w}")
+    for w in fab_warnings:
         print(f"WARNING     : {w}")
     print(f"wrote       : {args.out}")
     print(f"net classes : {pro or 'none (emitter defaults)'}")

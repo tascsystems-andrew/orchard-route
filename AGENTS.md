@@ -73,6 +73,28 @@ The stats block is machine-readable intent:
     `nets` against a `--no-via-exclusion` run if you need the number.
     Via-to-via comes out conservative (the claim is symmetric); the summary
     prints both the enforced and the required separation.
+- `fab : PROFILE | track W OK (min M) | via V OK (min M) | clearance C OK
+  (min M) | verified DATE` — **the manufacturing contract** (`fab.py`),
+  printed only when `--fab` names a profile. The geometry line asks "does
+  this copper fit its grid?"; this line asks "will the board house etch it,
+  at the price on the front page?" The two are independent: KiCad's stock
+  0.6 mm via is free at every house and does not fit a 0.5 mm grid.
+  - `--fab jlcpcb-standard` (default `none`, which constrains nothing).
+    `standard` profiles carry each house's **no-surcharge** floor; `extended`
+    profiles carry the process floor, all of which costs money. Run
+    `python fab.py --compare --pitch 0.5` to see the houses side by side, and
+    `python fab.py NAME` for every number with its source URL.
+  - A profile FILLS copper numbers the project's net classes leave unsaid —
+    a class the user wrote always wins — and CHECKS the result. Violations
+    are loud and **do not change the user's numbers**.
+  - `--fab-enforce` snaps to the profile's cheapest legal values and names
+    every substitution. It raises copper that is too small to build, and
+    shrinks a via that is buildable but too big for the pitch. It never
+    narrows track width or clearance: those encode current capacity and
+    creepage, which no fab profile knows.
+  - `verified DATE` is when the numbers were last read off the house's site.
+    A profile older than `fab.STALE_AFTER_DAYS` prints a STALE warning —
+    fab tiers change, so re-read the sources rather than trusting the file.
 - `nets X routable | Y fully routed | Z with failures` — Y/X is the score.
 - `overuse [...]` — collisions per iteration. Healthy runs fall monotonically
   to 0. A long plateau then a spike then 0 is the stall escape working. Ending
