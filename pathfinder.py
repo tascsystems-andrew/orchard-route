@@ -76,6 +76,15 @@ class RouteResult:
     fab_violations: list = None   # fab.Violation list, may be empty
     fab_warnings: list = None     # loud strings: violations, staleness,
                                   # enforce changes, unfittable pitches
+    net_widths: dict = None       # net_code -> (track, via, drill) mm, fully
+                                  # resolved (classes + --width-map + cap +
+                                  # --fab-enforce). THE copper to emit: the
+                                  # geometry above was computed from it, so a
+                                  # writer that re-resolves widths for itself
+                                  # is emitting copper the router never
+                                  # modelled. Emit this, unchanged.
+    emit_defaults: tuple = None   # (track, via, drill) scalars for any net
+                                  # net_widths does not name
 
 
 @dataclass(eq=False)  # identity hash: connections are keyed by instance
@@ -1041,21 +1050,142 @@ def net_pads_for_board(board, lat, node_owner=None):
     return net_pads
 
 
+def _resolve_emitted_widths(board_path, brd, pitch_mm, profile, width_map,
+                            max_width_mm):
+    """The per-net copper this run will EMIT, resolved once, here.
+
+    Order of precedence, lowest first: the emitter's scalar defaults, a fab
+    profile's cheapest legal copper (fills only what nothing else states),
+    the project's net classes, --width-map globs, then the --max-width cap
+    (default: the pitch, because a track wider than the pitch overlaps its
+    lattice neighbour). This used to live in writeback's main() and ran
+    AFTER routing, which meant the router planned via halos for one via size
+    and the writer emitted another.
+
+    Returns (widths, emit_defaults, warnings, note) where `note` is the
+    provenance string the geometry contract prints.
+    """
+    import fab as fab_mod
+    from writeback import (DEFAULT_DRILL_MM, DEFAULT_TRACK_MM, DEFAULT_VIA_MM,
+                           apply_width_map, cap_track_widths,
+                           load_net_class_widths, parse_width_map,
+                           project_file_for)
+
+    warnings, sources = [], []
+    emit = (DEFAULT_TRACK_MM, DEFAULT_VIA_MM, DEFAULT_DRILL_MM)
+    if profile.constrains:
+        try:
+            rec = fab_mod.recommend(profile, pitch_mm)
+            emit = (rec.track_mm, rec.via_size_mm, rec.via_drill_mm)
+            sources.append(f"{profile.name} defaults")
+        except fab_mod.FabPitchError:
+            pass          # route_board already reports it on fab_warnings
+
+    pro = project_file_for(board_path)
+    widths = {}
+    if pro:
+        try:
+            widths = load_net_class_widths(pro, brd.nets, *emit)
+            sources.append("project net classes")
+        except (OSError, ValueError):
+            warnings.append(f"net classes unreadable in {pro} — falling back "
+                            f"to emitter defaults")
+    if not widths:
+        widths = {code: emit for code in brd.nets}
+        if not pro:
+            sources.append("emitter defaults (no project file)")
+
+    if width_map:
+        entries = width_map if not isinstance(width_map, str) \
+            else parse_width_map(width_map)
+        if entries:
+            widths = apply_width_map(widths, brd.nets, entries, *emit)
+            sources.append("--width-map")
+
+    cap = pitch_mm if max_width_mm is None else max_width_mm
+    widths, capped = cap_track_widths(widths, brd.nets, cap)
+    if capped:
+        warnings.append(
+            f"track width capped at {cap:.4g} mm (grid overlap) for "
+            f"{len(capped)} net(s): {', '.join(capped)}")
+        sources.append(f"capped at {cap:.4g}")
+    return widths, emit, warnings, " + ".join(sources) or "emitter defaults"
+
+
+def _widths_of_routed_nets(widths, net_pads, emit_defaults):
+    """`widths` narrowed to the nets this run can actually route — the ones
+    with two or more distinct pads on the lattice.
+
+    The geometry contract takes the WORST copper among these. Averaging would
+    understate the halo, and taking the Default class would ignore whatever
+    the designer widened; a single-pad net emits no copper at all, so letting
+    its class inflate every via halo on the board would cost routability for
+    copper that never gets written."""
+    routed = {code for code, pads in net_pads.items()
+              if code > 0 and len({frozenset(nodes) for nodes, _ in pads}) >= 2}
+    out = {code: widths.get(code, emit_defaults) for code in routed}
+    return out or dict(widths)      # nothing routable: model everything
+
+
+def _apply_fab_outcome(widths, outcome, geo):
+    """Push a --fab-enforce decision into the per-net copper so the EMITTED
+    copper moves with the contract.
+
+    fab.reconcile raises copper too small to build and, separately, shrinks a
+    via that is buildable but too big for the pitch. Both directions must
+    reach the writer: a run that prints the profile's legal via and writes the
+    old one is exactly the say/do failure --fab-enforce exists to prevent.
+    Track width and clearance are only ever raised (fab.py never narrows
+    them — they encode current capacity and creepage)."""
+    if not outcome.changes:
+        return dict(widths)
+    shrink_via = outcome.via_size_mm is not None and \
+        outcome.via_size_mm < float(geo.via_size_mm) - 1e-9
+    out = {}
+    for code, (tw, vs, vd) in widths.items():
+        if outcome.track_mm is not None:
+            tw = max(tw, outcome.track_mm)
+        if outcome.via_size_mm is not None:
+            vs = min(vs, outcome.via_size_mm) if shrink_via \
+                else max(vs, outcome.via_size_mm)
+        if outcome.via_drill_mm is not None:
+            # The drill follows its via: reconcile shrinks it only to keep a
+            # legal annular ring inside a via it just shrank.
+            vd = min(vd, outcome.via_drill_mm) if shrink_via \
+                else max(vd, outcome.via_drill_mm)
+        out[code] = (tw, vs, vd)
+    return out
+
+
 def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
                 track_width_mm=None, via_size_mm=None, via_exclusion=True,
-                fab=None, fab_enforce=False, **kwargs):
+                fab=None, fab_enforce=False, width_map=None,
+                max_width_mm=None, **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
 
     directions/via_cost/dir_penalty go to lattice_for_board (board-routing
     defaults: both-direction layers, expensive vias); **kwargs go to
     route_lattice.
 
+    width_map / max_width_mm: the SAME per-net copper resolution writeback
+    emits with — project net classes, then --width-map globs, then the
+    --max-width cap (default: the pitch). It is resolved HERE, before the
+    geometry contract, because the contract's via halo and clearance rings
+    are planned against these numbers and it is not honest to plan halos for
+    a 0.6 mm via and then write 1.2 mm copper. The resolved map comes back on
+    RouteResult.net_widths and writeback emits exactly it; nothing downstream
+    is allowed to re-resolve widths.
+
     clearance_mm: real spacing between routed copper and foreign pads /
     the board edge (lattice.clearance_map). None -> the project Default
-    class clearance, else 0.2 mm; 0 disables the clearance model entirely
-    (the old pitch-is-clearance behavior). track_width_mm overrides the
-    project Default class width the ring inflation reads.
+    class clearance; 0 disables the clearance model entirely (the old
+    pitch-is-clearance behavior). track_width_mm overrides the width the
+    ring inflation reads. The resolved geometry is the SINGLE source of
+    truth for both: the ring model is built from geo.clearance_mm and
+    geo.track_width_mm, never from a private fallback constant, so the
+    contract line and the copper the router actually plans agree by
+    construction.
 
     via_size_mm / via_exclusion: the copper geometry contract
     (geometry.resolve_board_geometry) is computed for every board and drives
@@ -1078,11 +1208,10 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     RouteResult.fab_warnings — the tool never changes the user's copper
     quietly."""
     import fab as fab_mod
-    from dataclasses import replace as _replace
 
     from board import load_board
     from geometry import resolve_board_geometry
-    from lattice import (DEFAULT_CLEARANCE_MM, clearance_map, lattice_for_board,
+    from lattice import (clearance_map, lattice_for_board,
                          pad_overlap_allowances)
 
     profile = fab_mod.load_profile(fab)
@@ -1090,36 +1219,15 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
     stale = profile.stale_warning()
     if stale:
         fab_warnings.append(stale)
+    clearance_arg = clearance_mm
     clearance_mm, track_width_mm, via_size_mm, fab_notes = fab_mod.fill_defaults(
         board_path, profile, pitch_mm, clearance_mm, track_width_mm, via_size_mm)
+    clearance_note = "caller argument" if clearance_arg is not None else (
+        f"{profile.name} fab profile" if clearance_mm is not None else "")
 
     t0 = time.perf_counter()
     brd = load_board(board_path)
     t_load = time.perf_counter() - t0
-    geo = resolve_board_geometry(board_path, pitch_mm, brd.nets,
-                                 clearance_mm=clearance_mm,
-                                 track_width_mm=track_width_mm,
-                                 via_size_mm=via_size_mm)
-
-    outcome = fab_mod.reconcile(geo, profile, pitch_mm, enforce=fab_enforce)
-    fab_warnings += fab_mod.violation_warnings(outcome.violations, profile)
-    if outcome.changes:
-        geo = _replace(
-            geo,
-            track_width_mm=outcome.track_mm if outcome.track_mm is not None
-            else geo.track_width_mm,
-            clearance_mm=outcome.clearance_mm if outcome.clearance_mm is not None
-            else geo.clearance_mm,
-            via_size_mm=outcome.via_size_mm if outcome.via_size_mm is not None
-            else geo.via_size_mm)
-        # The clearance model reads these two directly; keep them in step with
-        # the geometry contract or the router would enforce the OLD numbers.
-        clearance_mm = geo.clearance_mm
-        track_width_mm = geo.track_width_mm
-        fab_warnings.append(
-            f"--fab-enforce changed this board's copper to satisfy "
-            f"{profile.name}: " + "; ".join(outcome.changes))
-    fab_warnings += outcome.notes
 
     t0 = time.perf_counter()
     lat, pad_nodes, node_owner = lattice_for_board(brd, pitch_mm,
@@ -1127,24 +1235,70 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                                                    directions=directions,
                                                    via_cost=via_cost,
                                                    dir_penalty=dir_penalty)
+    net_pads = net_pads_for_board(brd, lat, node_owner)
+
+    # ── copper resolution, BEFORE the contract ──────────────────────────
+    # Every number the geometry line prints and every halo the router plans
+    # comes out of this map, and writeback emits this map unchanged.
+    widths, emit_defaults, width_warnings, widths_note = _resolve_emitted_widths(
+        board_path, brd, pitch_mm, profile, width_map, max_width_mm)
+    routed_widths = _widths_of_routed_nets(widths, net_pads, emit_defaults)
+
+    geo = resolve_board_geometry(board_path, pitch_mm, brd.nets,
+                                 clearance_mm=clearance_mm,
+                                 track_width_mm=track_width_mm,
+                                 via_size_mm=via_size_mm,
+                                 widths=routed_widths,
+                                 max_width_mm=max_width_mm,
+                                 widths_note=widths_note,
+                                 clearance_note=clearance_note)
+
+    outcome = fab_mod.reconcile(geo, profile, pitch_mm, enforce=fab_enforce)
+    fab_warnings += fab_mod.violation_warnings(outcome.violations, profile)
+    if outcome.changes:
+        # --fab-enforce must move the EMITTED copper, not just the modelled
+        # copper: snapping the contract alone would print the profile's legal
+        # numbers and write the old illegal ones.
+        widths = _apply_fab_outcome(widths, outcome, geo)
+        routed_widths = _widths_of_routed_nets(widths, net_pads, emit_defaults)
+        emit_defaults = _apply_fab_outcome(
+            {0: emit_defaults}, outcome, geo)[0]
+        geo = resolve_board_geometry(
+            board_path, pitch_mm, brd.nets,
+            clearance_mm=outcome.clearance_mm if outcome.clearance_mm is not None
+            else geo.clearance_mm,
+            widths=routed_widths, max_width_mm=max_width_mm,
+            widths_note=f"{widths_note} + {profile.name} --fab-enforce",
+            clearance_note=(f"{profile.name} --fab-enforce"
+                            if outcome.clearance_mm is not None
+                            else geo.clearance_source))
+        fab_warnings.append(
+            f"--fab-enforce changed this board's copper to satisfy "
+            f"{profile.name}: " + "; ".join(outcome.changes))
+    fab_warnings += outcome.notes
+
     extra_allow = pad_overlap_allowances(brd, lat)
-    if clearance_mm is None:
-        clearance_mm = DEFAULT_CLEARANCE_MM
+    # The resolved geometry is the single source of truth for the ring model.
+    # Reading a private DEFAULT_CLEARANCE_MM here instead is what made the
+    # tool wall pads at 0.2 mm while its own contract line said 0.15.
+    ring_clearance = 0.0 if (clearance_arg is not None and clearance_arg <= 0) \
+        else geo.clearance_mm
     clearance = clearance_map(brd, lat, node_owner, pad_nodes,
-                              clearance_mm=clearance_mm,
-                              track_width_mm=track_width_mm) \
-        if clearance_mm > 0 else None
+                              clearance_mm=ring_clearance,
+                              track_width_mm=geo.track_width_mm) \
+        if ring_clearance > 0 else None
     t_lat = time.perf_counter() - t0
     kwargs.setdefault("via_exclusion_mm",
                       geo.via_exclusion_mm if via_exclusion else 0.0)
     kwargs.setdefault("allow_diagonals", geo.diagonals_ok)
-    res = route_lattice(lat, net_pads_for_board(brd, lat, node_owner),
-                        node_owner, extra_allow=extra_allow,
+    res = route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
                         clearance=clearance, **kwargs)
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     res.geometry = geo
     res.geometry_note = geo.summary()
-    res.geometry_warnings = geo.warnings()
+    res.geometry_warnings = geo.warnings() + width_warnings
+    res.net_widths = widths
+    res.emit_defaults = emit_defaults
     res.fab_profile = profile
     res.fab_violations = fab_mod.check(geo, profile)
     res.fab_note = fab_mod.summary_line(geo, profile,

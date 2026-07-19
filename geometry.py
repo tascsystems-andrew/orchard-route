@@ -35,6 +35,18 @@ import math
 from dataclasses import dataclass
 
 
+def _mm(v):
+    """A copper dimension, printed without losing digits that matter.
+
+    Two decimals for the ordinary case (0.25, 0.60) and full precision when
+    rounding would misstate the number: a fab profile's 0.1524 mm minimum
+    track printed as `0.15` invites a hand-check against copper that is not
+    0.15 mm. The derived `needs` figures stay at 2dp — they are comparisons,
+    not the numbers anyone measures."""
+    return f"{v:.2f}" if abs(round(v, 2) - v) < 1e-9 \
+        else f"{v:.6f}".rstrip("0")
+
+
 def halo_offsets(pitch_mm, radius_mm):
     """Planar (dx, dy) grid offsets whose node centres lie within radius_mm.
 
@@ -58,11 +70,19 @@ class CopperGeometry:
     are per net class; the widest one sets the spacing the grid must support).
     clearance_mm is the project's Default-class clearance — the number KiCad's
     DRC will actually enforce.
+
+    copper_source / clearance_source are PROVENANCE, and they are part of the
+    contract, not decoration. A geometry that states 0.15 mm while something
+    downstream enforces 0.20 mm is worse than one that fails: the whole point
+    of printing this line every run is that its numbers are checkable. So the
+    resolver records where each number came from and summary() says it.
     """
     pitch_mm: float
     track_width_mm: float
     clearance_mm: float
     via_size_mm: float
+    copper_source: str = ""
+    clearance_source: str = ""
 
     # ── required pitches ────────────────────────────────────────────────
     @property
@@ -141,17 +161,24 @@ class CopperGeometry:
 
     def summary(self):
         """One line stating the contract, for every run's stats block."""
+        src = []
+        if self.copper_source:
+            src.append(f"copper {self.copper_source}")
+        if self.clearance_source:
+            src.append(f"clearance {self.clearance_source}")
         return (
             f"pitch {self.pitch_mm:.2f}mm | "
-            f"track {self.track_width_mm:.2f} clearance {self.clearance_mm:.2f} "
-            f"via {self.via_size_mm:.2f} | "
+            f"track {_mm(self.track_width_mm)} "
+            f"clearance {_mm(self.clearance_mm)} "
+            f"via {_mm(self.via_size_mm)} | "
             f"orthogonal {'OK' if self.orthogonal_ok else 'VIOLATED'} "
             f"(needs {self.orthogonal_pitch_mm:.2f}) | "
             f"diagonals {'ON' if self.diagonals_ok else 'OFF'} "
             f"(need {self.diagonal_pitch_mm:.2f}) | "
             f"vias exclude r={self.via_exclusion_mm:.2f}mm "
             f"(via-via enforced {self.via_via_enforced_mm():.2f}, "
-            f"needs {self.via_via_exclusion_mm:.2f})")
+            f"needs {self.via_via_exclusion_mm:.2f})"
+            + (" | source: " + "; ".join(src) if src else ""))
 
     def warnings(self):
         """Loud, numeric complaints about a pitch too fine for its own copper.
@@ -181,11 +208,28 @@ class CopperGeometry:
 
 
 def resolve_board_geometry(board_path, pitch_mm, nets, clearance_mm=None,
-                           track_width_mm=None, via_size_mm=None):
-    """CopperGeometry for a real board: the WIDEST track and via any net class
-    resolves to (capped at the pitch for tracks, exactly as writeback caps at
-    emit time — copper wider than the pitch is refused there), and the
-    project's Default-class clearance, which is the number DRC enforces.
+                           track_width_mm=None, via_size_mm=None,
+                           widths=None, max_width_mm=None,
+                           widths_note="", clearance_note=""):
+    """CopperGeometry for a real board: the WIDEST track and via any net
+    resolves to, and the clearance DRC will actually enforce.
+
+    `widths` is the caller's FULLY RESOLVED net_code -> (track, via, drill)
+    map — project net classes plus --width-map plus any --max-width cap,
+    i.e. exactly the numbers writeback is about to emit — restricted to the
+    nets that will actually be routed. When it is given, the contract is
+    derived from it and nothing is re-read from the project, so the modelled
+    geometry cannot drift from the emitted copper. Widths differ per net, so
+    there is no single global geometry: the halo and the contract take the
+    WORST (largest) copper, never an average and never the Default class,
+    and copper_source records that so the line says what it did.
+
+    When `widths` is absent the project's net classes are read here, as
+    before, for callers (tests, the region solver) that do not emit copper.
+
+    A hardcoded default is the LAST resort for clearance, never a silent
+    override of a resolvable number: whatever survives lands in
+    clearance_source, which summary() prints.
 
     writeback is imported lazily: it is the L0 output module and this is L1;
     the dependency is one-way at call time only, never at import time.
@@ -196,27 +240,56 @@ def resolve_board_geometry(board_path, pitch_mm, nets, clearance_mm=None,
                            load_net_class_widths, project_file_for)
 
     pro_clearance, pro_width = default_copper_rules(board_path)
-    clearance = clearance_mm if clearance_mm is not None else pro_clearance
+    pro_path = project_file_for(board_path)
+    if clearance_mm is not None:
+        clearance, clr_src = clearance_mm, (clearance_note or "caller argument")
+    elif pro_path:
+        clearance, clr_src = pro_clearance, "project Default net class"
+    else:
+        clearance, clr_src = pro_clearance, "built-in default (no project file)"
     if clearance <= 0:
+        # default_copper_rules never returns <= 0, so this is a caller asking
+        # for 0 (the clearance MODEL off). The contract still needs a number
+        # for its arithmetic; say plainly that it is a fallback, not a rule
+        # anyone stated.
         clearance = DEFAULT_CLEARANCE_MM
+        clr_src = (f"built-in default {DEFAULT_CLEARANCE_MM} mm — caller "
+                   f"asked for {clearance_mm}, nothing else resolvable")
 
-    width, via = pro_width, DEFAULT_VIA_MM
-    pro = project_file_for(board_path)
-    if pro and nets:
-        try:
-            widths = load_net_class_widths(pro, nets)
-        except (OSError, ValueError):
-            widths = {}
-        if widths:
-            width = max(w for w, _, _ in widths.values())
-            via = max(v for _, v, _ in widths.values())
-    if not width:
-        width = DEFAULT_TRACK_MM
-    width = min(width, pitch_mm)      # writeback's emit-time cap
+    cap = pitch_mm if max_width_mm is None else max_width_mm
+    if widths:
+        width = max(w for w, _, _ in widths.values())
+        via = max(v for _, v, _ in widths.values())
+        src = widths_note or "resolved net widths"
+        cop_src = (f"{src}, widest of {len(widths)} net(s)"
+                   if len(widths) > 1 else src)
+    else:
+        width, via, cop_src = pro_width, DEFAULT_VIA_MM, "emitter defaults"
+        if pro_path and nets:
+            try:
+                loaded = load_net_class_widths(pro_path, nets)
+            except (OSError, ValueError):
+                loaded = {}
+            if loaded:
+                width = max(w for w, _, _ in loaded.values())
+                via = max(v for _, v, _ in loaded.values())
+                cop_src = (f"project net classes, widest of {len(loaded)} net(s)"
+                           if len(loaded) > 1 else "project net classes")
+        if not width:
+            width = DEFAULT_TRACK_MM
+        width = min(width, cap)       # writeback's emit-time cap
+
+    if track_width_mm is not None:
+        width, cop_src = track_width_mm, "caller argument"
+    if via_size_mm is not None:
+        via = via_size_mm
+        cop_src = "caller argument" if track_width_mm is not None \
+            else cop_src + " (via from caller argument)"
 
     return CopperGeometry(
         pitch_mm=float(pitch_mm),
-        track_width_mm=float(track_width_mm if track_width_mm is not None
-                             else width),
+        track_width_mm=float(width),
         clearance_mm=float(clearance),
-        via_size_mm=float(via_size_mm if via_size_mm is not None else via))
+        via_size_mm=float(via),
+        copper_source=cop_src,
+        clearance_source=clr_src)

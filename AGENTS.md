@@ -48,17 +48,21 @@ Report it; do not silently route around bad placement.
   are usually planes — do not route signals there without being asked.
 - `--no-refine` disables the post-legal shortening pass (only for debugging).
 - `--width-map "GLOB=width[:via:drill]"` overrides classes per run;
-  `--max-width` caps at pitch by default and WARNS naming capped nets.
+  `--max-width` caps at pitch by default and WARNS naming capped nets. Both
+  are resolved before the route, so the geometry contract describes the copper
+  they produce — widening a via with `--width-map` costs routability, visibly,
+  in the same run rather than silently at DRC.
 
 ## Phase 2 — read the result (this is the feedback loop)
 
 The stats block is machine-readable intent:
 
 - `geometry : pitch P | track W clearance C via V | orthogonal OK/VIOLATED
-  (needs X) | diagonals ON/OFF (need Y) | vias exclude r=R` — **the copper
-  geometry contract** (`geometry.py`). The lattice models where copper goes;
-  this line is the tool stating how BIG that copper is and what the grid must
-  therefore be. Four numbers, all derivable by hand:
+  (needs X) | diagonals ON/OFF (need Y) | vias exclude r=R | source: copper
+  ...; clearance ...` — **the copper geometry contract** (`geometry.py`). The
+  lattice models where copper goes; this line is the tool stating how BIG that
+  copper is and what the grid must therefore be. Four numbers, all derivable
+  by hand:
   - orthogonal needs `track_width + clearance`. VIOLATED means every pair of
     adjacent-node tracks the router emits is a DRC violation — the board's
     own net class does not fit its own pitch. The run continues and says so
@@ -73,6 +77,16 @@ The stats block is machine-readable intent:
     `nets` against a `--no-via-exclusion` run if you need the number.
     Via-to-via comes out conservative (the claim is symmetric); the summary
     prints both the enforced and the required separation.
+  - `source:` is PROVENANCE, and it is load-bearing. Widths are per net, so
+    there is no single global geometry: `copper` names where the numbers came
+    from (project net classes, `--width-map`, a fab profile, a `--max-width`
+    cap) and says `widest of N net(s)` — the contract takes the WORST copper
+    among the nets this run can actually route, never an average and never
+    just the Default class, because a halo sized for the average is wrong for
+    the widest. `clearance` names its own source, and says plainly when it is
+    a built-in fallback rather than a number the project stated. These are
+    resolved BEFORE routing: whatever this line says is what `writeback.py`
+    emits, and `writeback.verify_emission` refuses to write if it ever isn't.
 - `fab : PROFILE | track W OK (min M) | via V OK (min M) | clearance C OK
   (min M) | verified DATE` — **the manufacturing contract** (`fab.py`),
   printed only when `--fab` names a profile. The geometry line asks "does
@@ -131,6 +145,19 @@ It reports track-track / track-via / via-via violations with the worst gaps and
 their coordinates, and it is the number to quote when you claim a routing run
 is clean. It deliberately ignores pads, zones, the board edge, and copper that
 was already in the input file.
+
+Read the `measured :` line before you quote the `VIOLATIONS :` line. A
+violation count is only meaningful next to the emitted-item count that
+produced it — this checker once printed `emitted: 0 tracks, 0 vias /
+VIOLATIONS: 0` for a board carrying 700+ router segments, because it
+identified emitted copper by `uuid` and KiCad-5-era files (rpi-pico-vga) carry
+no id on track nodes at all. It now matches on uuid, tstamp, or exact
+geometry, and it **exits non-zero with `AUDIT FAILED`** rather than report a
+clean bill when it finds nothing in an output larger than its source. If you
+see that, you have a measurement failure, not a clean board: do not quote a
+number from it. `--brute-force` re-runs the same measurement with no spatial
+index (O(n²)) and reports whether the two agree — use it when a violation
+count is going into a report.
 
 ## Hard rules
 

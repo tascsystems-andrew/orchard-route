@@ -298,6 +298,46 @@ def cap_track_widths(widths, nets, max_width_mm):
     return capped, sorted(hit)
 
 
+def verify_emission(geometry, widths, tracks, vias, defaults):
+    """Prove the copper about to be WRITTEN is the copper that was MODELLED.
+
+    The router plans via-exclusion halos and pad clearance rings from
+    `geometry`. If a single emitted segment is wider than geometry.track_width_mm,
+    or a single emitted via bigger than geometry.via_size_mm, then those halos
+    were sized for copper that does not exist and every clearance number the
+    run printed is wrong. That is not a warning-level event — the geometry
+    line is this tool's promise that its limits are inspectable — so the
+    caller raises on it.
+
+    Returns [] when the emission is within the contract, else one string per
+    breach naming the net, the modelled number and the emitted one.
+    """
+    problems = []
+    worst_track, worst_via = {}, {}
+    for *_xy, _layer, code in tracks:
+        w = widths.get(code, defaults)[0]
+        if w > worst_track.get(code, 0.0):
+            worst_track[code] = w
+    for _x, _y, code in vias:
+        v = widths.get(code, defaults)[1]
+        if v > worst_via.get(code, 0.0):
+            worst_via[code] = v
+    for code, w in sorted(worst_track.items()):
+        if w > geometry.track_width_mm + 1e-9:
+            problems.append(
+                f"net {code}: emitting {w:.4g} mm track, but the geometry "
+                f"contract modelled {geometry.track_width_mm:.4g} mm — every "
+                f"clearance and halo this run planned is wrong for it")
+    for code, v in sorted(worst_via.items()):
+        if v > geometry.via_size_mm + 1e-9:
+            problems.append(
+                f"net {code}: emitting {v:.4g} mm via, but the geometry "
+                f"contract modelled {geometry.via_size_mm:.4g} mm — the "
+                f"via-exclusion halo was sized r={geometry.via_exclusion_mm:.4g} "
+                f"mm for copper this board does not contain")
+    return problems
+
+
 def write_routed_copy(board_path, out_path, tracks, vias, nets,
                       track_width_mm=DEFAULT_TRACK_MM,
                       via_size_mm=DEFAULT_VIA_MM,
@@ -651,10 +691,15 @@ def main(argv=None):
         ap.error(str(e))
 
     from pathfinder import route_board, paths_to_tracks
+    # --width-map / --max-width / --fab go IN, so route_board resolves the
+    # copper before it plans halos and clearance rings. What comes back on
+    # res.net_widths is what gets written, unchanged: see verify_emission().
     brd, lat, res = route_board(args.board, pitch_mm=args.pitch,
                                 layer_names=layers,
                                 fab=args.fab, fab_enforce=args.fab_enforce,
-                                via_exclusion=not args.no_via_exclusion)
+                                via_exclusion=not args.no_via_exclusion,
+                                width_map=args.width_map or None,
+                                max_width_mm=args.max_width)
     # Prefer the router's smoothed geometry (45-degree segments emit as plain
     # (segment) nodes with diagonal endpoints — KiCad accepts them); raw
     # lattice geometry is the fallback when smoothing was disabled.
@@ -664,37 +709,18 @@ def main(argv=None):
         tracks, vias = paths_to_tracks(lat, res.net_paths)
 
     pro = project_file_for(args.board)
-    widths = load_net_class_widths(pro, brd.nets) if pro else {}
-
-    # Emission defaults: the scalars write_routed_copy falls back to for any
-    # net no class and no --width-map claims. A fab profile replaces them with
-    # its cheapest legal copper — but only the fallback. A net class the user
-    # wrote is a design decision and still wins; the fab check below is what
-    # tells them if that decision is unbuildable.
-    emit = [DEFAULT_TRACK_MM, DEFAULT_VIA_MM, DEFAULT_DRILL_MM]
+    # THE copper: resolved once, inside route_board, before the geometry
+    # contract was computed from it. Re-resolving it here is what made the
+    # tool print `via 0.60` and write `(size 1.2)`.
+    widths = res.net_widths or {}
+    emit = list(res.emit_defaults or (DEFAULT_TRACK_MM, DEFAULT_VIA_MM,
+                                      DEFAULT_DRILL_MM))
     fab_lines = []          # printed with the geometry block, not here
-    if fab_profile.constrains:
-        try:
-            rec = fab_mod.recommend(fab_profile, args.pitch)
-            emit = [rec.track_mm, rec.via_size_mm, rec.via_drill_mm]
-            if not widths:
-                fab_lines.append(
-                    f"fab defaults: track {_fmt(rec.track_mm)} "
-                    f"via {_fmt(rec.via_size_mm)}/{_fmt(rec.via_drill_mm)} mm "
-                    f"from {fab_profile.name} (no net classes in this project)")
-        except fab_mod.FabPitchError:
-            pass    # route_board already reported it on res.fab_warnings
-
-    if args.width_map:
-        widths = apply_width_map(widths, brd.nets,
-                                 parse_width_map(args.width_map),
-                                 track_width_mm=emit[0], via_size_mm=emit[1],
-                                 via_drill_mm=emit[2])
-    max_width = args.max_width if args.max_width is not None else args.pitch
-    widths, capped = cap_track_widths(widths, brd.nets, max_width)
-    if capped:
-        print(f"WARNING     : track width capped at {_fmt(max_width)} mm "
-              f"(grid overlap) for {len(capped)} net(s): {', '.join(capped)}")
+    if fab_profile.constrains and not pro:
+        fab_lines.append(
+            f"fab defaults: track {_fmt(emit[0])} "
+            f"via {_fmt(emit[1])}/{_fmt(emit[2])} mm "
+            f"from {fab_profile.name} (no net classes in this project)")
 
     # Check what will actually be EMITTED, not just what the router modelled.
     # A fab floor is a MINIMUM, so the number that can violate it is the
@@ -702,15 +728,24 @@ def main(argv=None):
     # end of the distribution from the one geometry.py cares about (which asks
     # whether the WIDEST copper fits the grid). Both checks are real; they
     # just interrogate different tails.
-    emit_drill = min([d for _, _, d in widths.values()] or [emit[2]])
+    # Only nets that actually got copper: a class assigned to a net this run
+    # never routed cannot violate a fab floor, because nothing was etched for
+    # it. Measuring the whole net table would report a violation in copper
+    # that does not exist — the same class of lie as the contract bugs.
+    written = {code for *_xy, _layer, code in tracks} | {c for _x, _y, c in vias}
+    emit_triples = [widths.get(c, tuple(emit)) for c in written] or [tuple(emit)]
+    emit_drill = min(d for _, _, d in emit_triples)
     fab_note, fab_warnings = None, []
     if fab_profile.constrains:
         from geometry import CopperGeometry
         emitted = CopperGeometry(
             pitch_mm=args.pitch,
-            track_width_mm=min([w for w, _, _ in widths.values()] or [emit[0]]),
-            clearance_mm=res.geometry.clearance_mm if res.geometry else 0.2,
-            via_size_mm=min([v for _, v, _ in widths.values()] or [emit[1]]))
+            track_width_mm=min(w for w, _, _ in emit_triples),
+            # The run's resolved clearance, never a private constant: this
+            # line is checked against a fab floor and printed.
+            clearance_mm=res.geometry.clearance_mm,
+            clearance_source=res.geometry.clearance_source,
+            via_size_mm=min(v for _, v, _ in emit_triples))
         emit_violations = fab_mod.check(emitted, fab_profile,
                                         via_drill_mm=emit_drill)
         fab_note = fab_mod.summary_line(emitted, fab_profile,
@@ -723,6 +758,18 @@ def main(argv=None):
     seen = set(fab_warnings)
     fab_warnings += [w for w in (getattr(res, "fab_warnings", None) or [])
                      if w not in seen]
+
+    if res.geometry is not None:
+        breaches = verify_emission(res.geometry, widths, tracks, vias,
+                                   tuple(emit))
+        if breaches:
+            raise SystemExit(
+                "REFUSING TO WRITE: the copper resolved for emission does not "
+                "match the geometry contract this run printed.\n  "
+                + "\n  ".join(breaches)
+                + "\nThis is a bug in the tool, not in the board. Nothing was "
+                  "written; the contract must never describe copper other "
+                  "than what is emitted.")
 
     write_routed_copy(args.board, args.out, tracks, vias, brd.nets,
                       track_width_mm=emit[0], via_size_mm=emit[1],
