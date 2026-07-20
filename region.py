@@ -579,10 +579,48 @@ def _scatter_pile(order, pinned, live, courts, region, grid_mm, obstacles):
     return moves
 
 
-def seed_placement(parts, region, specs, obstacles, grid_mm):
+def _translate_group_into_fence(order, pinned, live, courts, region):
+    """RIGIDLY translate every non-pinned part by ONE common vector so their
+    collective courtyard bbox lands inside the fence — preserving every
+    relative offset (the caller's deliberate arrangement), never scattering
+    each part independently. This is `respect_positions`: a shelf-packed or
+    stage.py-staged arrangement in a margin/staging strip is a real layout, not
+    a meaningless origin-pile, so it is moved in as a unit. Returns the move
+    list (empty if the group already sits inside the fence). If the arrangement
+    is wider or taller than the fence it is aligned to the fence's near corner
+    and left overflowing — the anneal's hard fence rejection then reports it,
+    the same as any oversized start."""
+    movers = [r for r in order if r not in pinned]
+    if not movers:
+        return []
+    rx, ry, rw, rh = region
+    x0 = min(courts[r][0] for r in movers)
+    y0 = min(courts[r][1] for r in movers)
+    x1 = max(courts[r][2] for r in movers)
+    y1 = max(courts[r][3] for r in movers)
+    dx = (rx - x0) if x0 < rx else ((rx + rw - x1) if x1 > rx + rw else 0.0)
+    dy = (ry - y0) if y0 < ry else ((ry + rh - y1) if y1 > ry + rh else 0.0)
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return []                       # already inside — respected in place
+    moves = []
+    for r in movers:
+        frm = (live[r].x_mm, live[r].y_mm)
+        live[r] = _translate(live[r], frm[0] + dx, frm[1] + dy)
+        courts[r] = part_courtyard(live[r])
+        moves.append({"ref": r,
+                      "constraint": "respect-positions: rigid group -> fence",
+                      "from": [round(frm[0], 3), round(frm[1], 3)],
+                      "to": [round(live[r].x_mm, 3), round(live[r].y_mm, 3)],
+                      "distance_mm": round(math.hypot(dx, dy), 3),
+                      "displaces_movable": 0})
+    return moves
+
+
+def seed_placement(parts, region, specs, obstacles, grid_mm,
+                   respect_positions=False):
     """Move parts into a tractable starting arrangement BEFORE the anneal.
 
-    Two jobs, in order:
+    Default (respect_positions=False), two jobs in order:
 
     1. SCATTER the off-board pile (_scatter_pile). Parts default-placed at the
        board origin carry no position, so they are laid on a fresh grid inside
@@ -597,9 +635,15 @@ def seed_placement(parts, region, specs, obstacles, grid_mm):
        constraint an amp designer actually writes, so the part is put next to
        its partner here, then the annealer explores from there.
 
-    Translation only, nearest grid site first, and every move (scatter and
-    adjacency alike) is reported in diagnostics.seeded so nothing happens
-    silently.
+    respect_positions=True: the caller's positions ARE the arrangement (a
+    shelf-pack or a stage.py-staged layout). Skip the scatter and the adjacency
+    reseed entirely; rigidly translate the whole group into the fence,
+    preserving relative offsets, and let the anneal refine from there. This is
+    what makes a seeded start survive instead of being flattened onto a fresh
+    grid — parts already inside the fence never move.
+
+    Translation only, nearest grid site first, and every move is reported in
+    diagnostics.seeded so nothing happens silently.
     """
     by_ref = {p.ref: p for p in parts}
     order = [p.ref for p in parts]
@@ -608,6 +652,9 @@ def seed_placement(parts, region, specs, obstacles, grid_mm):
     live = {p.ref: _translate(p, p.x_mm, p.y_mm) for p in parts}
     courts = {r: part_courtyard(p) for r, p in live.items()}
     obstacles = list(obstacles)
+    if respect_positions:
+        moves = _translate_group_into_fence(order, pinned, live, courts, region)
+        return [live[r] for r in order], moves
     moves = _scatter_pile(order, pinned, live, courts, region, grid_mm,
                           obstacles)
 
@@ -817,7 +864,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                     seed=0, sweeps=200, grid_mm=0.5,
                     via_weight_mm=VIA_WEIGHT_MM, clearance_mm=None,
                     class_weights=None, keep_work=False, progress=None,
-                    route_kwargs=None, area=None, auto_fix_locked=True):
+                    route_kwargs=None, area=None, auto_fix_locked=True,
+                    respect_positions=False):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
@@ -945,7 +993,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     # then a constraint-aware seed, then the anneal.
     impossible = preflight(parts, region, specs, obstacles)
     parts, seeded = ([], []) if impossible else \
-        seed_placement(parts, region, specs, obstacles, grid_mm)
+        seed_placement(parts, region, specs, obstacles, grid_mm,
+                       respect_positions=respect_positions)
     if seeded:
         say("seed    " + "; ".join(
             f"{m['ref']} -> {m['constraint']} ({m['distance_mm']} mm)"
@@ -1489,6 +1538,12 @@ def main(argv=None):
     ap.add_argument("--no-auto-fix-locked", action="store_true",
                     help="do NOT auto-freeze locked footprints inside the fence "
                          "(default is to hold them fixed; A/B measurement only)")
+    ap.add_argument("--respect-positions", action="store_true",
+                    help="treat the components' input positions as a deliberate "
+                         "arrangement (a shelf-pack or stage.py-staged layout): "
+                         "rigidly translate the group into the fence preserving "
+                         "relative offsets instead of scattering it onto a fresh "
+                         "grid, then anneal from there")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--out", default=None, help="output directory")
     ap.add_argument("--pitch", type=float, default=0.5)
@@ -1538,6 +1593,7 @@ def main(argv=None):
             seed=args.seed, sweeps=args.sweeps, via_weight_mm=args.via_weight,
             keep_work=args.keep_work, area=args.area,
             auto_fix_locked=not args.no_auto_fix_locked,
+            respect_positions=args.respect_positions,
             progress=None if args.json else (lambda m: print(m, flush=True)))
     except ValueError as e:
         ap.error(str(e))

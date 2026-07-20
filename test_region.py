@@ -818,6 +818,65 @@ def test_pile_explicit_required():
 
 # ── driver ───────────────────────────────────────────────────────────────────
 
+def test_respect_positions():
+    print("=== respect_positions: rigid group translate, not scatter ===")
+    from region import seed_placement
+    from place import parts_from_board, part_courtyard
+    src = os.path.join(SYN_DIR, "respect", "seed.kicad_pcb")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    # A 2x2 shelf-pack in a staging strip at x 52..58, y 10..20 — ENTIRELY
+    # outside the fence (0,0,40,40). Each part on its own net (no HPWL pull).
+    pos = [("A", 52.0, 10.0), ("B", 58.0, 10.0),
+           ("C", 52.0, 20.0), ("D", 58.0, 20.0)]
+    fps = "\n".join(
+        f'\t(footprint "R" (layer "F.Cu")\n\t\t(at {x} {y})\n'
+        f'\t\t(property "Reference" "{r}" (at 0 0 0) (layer "F.SilkS"))\n'
+        f'\t\t(pad "1" smd rect (at 0 0) (size 3 3) (layers "F.Cu") '
+        f'(net {i + 1} "{r}"))\n\t)' for i, (r, x, y) in enumerate(pos))
+    with open(src, "w", encoding="utf-8") as f:
+        f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                '(44 "Edge.Cuts" user))\n'
+                + "".join(f'\t(net {i} "{n}")\n'
+                          for i, n in enumerate(["", "A", "B", "C", "D"]))
+                + '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") '
+                '(width 0.1))\n' + fps + "\n)\n")
+    bp = parts_from_board(src)
+    parts = [bp[r] for r, _x, _y in pos]
+    region = (0.0, 0.0, 40.0, 40.0)
+    inp = {p.ref: (p.x_mm, p.y_mm) for p in parts}
+
+    def off(a, b, d):
+        return (round(d[b][0] - d[a][0], 3), round(d[b][1] - d[a][1], 3))
+
+    sc, _ = seed_placement(parts, region, [], [], 0.5, respect_positions=False)
+    sco = {p.ref: (p.x_mm, p.y_mm) for p in sc}
+    check(off("A", "B", inp) != off("A", "B", sco)
+          or off("A", "C", inp) != off("A", "C", sco),
+          "default scatter breaks the relative arrangement (the bug being fixed)")
+
+    rp, _ = seed_placement(parts, region, [], [], 0.5, respect_positions=True)
+    rpo = {p.ref: (p.x_mm, p.y_mm) for p in rp}
+    preserved = all(off(a, b, inp) == off(a, b, rpo)
+                    for a, b in (("A", "B"), ("A", "C"), ("A", "D")))
+    inside = all(part_courtyard(p)[0] >= -1e-6 and part_courtyard(p)[2] <= 40 + 1e-6
+                 and part_courtyard(p)[1] >= -1e-6 and part_courtyard(p)[3] <= 40 + 1e-6
+                 for p in rp)
+    check(preserved, "respect_positions PRESERVES every relative offset")
+    check(inside, "respect_positions brings the whole arrangement inside the fence")
+
+    # a group ALREADY inside the fence is left exactly where it is
+    from region import _translate
+    inf_parts = [_translate(p, p.x_mm - 40.0, p.y_mm) for p in parts]  # strip -> fence
+    inf = {p.ref: (p.x_mm, p.y_mm) for p in inf_parts}
+    kept, moves = seed_placement(inf_parts, region, [], [], 0.5,
+                                 respect_positions=True)
+    kepto = {p.ref: (round(p.x_mm, 3), round(p.y_mm, 3)) for p in kept}
+    check(kepto == {r: (round(v[0], 3), round(v[1], 3)) for r, v in inf.items()}
+          and not moves,
+          "an in-fence arrangement is not moved at all under respect_positions")
+
+
 TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("determinism", test_determinism), ("frozen", test_frozen_parts),
          ("strip", test_strip), ("errors", test_errors),
@@ -825,6 +884,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("auto_fix", test_auto_fix_locked), ("pile", test_offboard_pile),
          ("pile_explicit", test_pile_explicit_required),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
+         ("respect_positions", test_respect_positions),
          ("acceptance", test_acceptance)]
 
 
