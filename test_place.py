@@ -30,8 +30,8 @@ import os
 
 from board import Pad
 from constraints import evaluate_constraints, parse_constraints
-from place import (COURTYARD_MARGIN_MM, Part, anneal_region, part_courtyard,
-                   parts_from_board, net_weights_from_project)
+from place import (COURTYARD_MARGIN_MM, Part, PlacementModel, anneal_region,
+                   part_courtyard, parts_from_board, net_weights_from_project)
 
 AMP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "amp_board.kicad_pcb")
@@ -62,6 +62,32 @@ def court_of(x, y, rot):
 def overlap(a, b):
     return (a[0] < b[2] - 1e-9 and b[0] < a[2] - 1e-9 and
             a[1] < b[3] - 1e-9 and b[1] < a[3] - 1e-9)
+
+
+def _write_courtyard_board(path):
+    """A radial (two THT pads 5 mm apart + a 13x13 mm F.CrtYd circle) and an SMD
+    part with no courtyard layer — the exact THT-body-overhangs-pads divergence
+    the field report hit (feedback/courtyard-model-2026-07-20)."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(
+            '(kicad_pcb (version 20240108) (generator "t")\n'
+            '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user)'
+            ' (45 "F.CrtYd" user) (46 "B.CrtYd" user))\n'
+            '\t(net 0 "") (net 1 "A") (net 2 "B")\n'
+            '\t(gr_rect (start 0 0) (end 60 40) (layer "Edge.Cuts") (width 0.1))\n'
+            '\t(footprint "Radial" (layer "F.Cu")\n\t\t(at 20 20)\n'
+            '\t\t(property "Reference" "C1" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(fp_circle (center 0 0) (end 6.5 0) (layer "F.CrtYd"))\n'
+            '\t\t(pad "1" thru_hole circle (at -2.5 0) (size 1.6 1.6) (drill 0.8) '
+            '(layers "*.Cu") (net 1 "A"))\n'
+            '\t\t(pad "2" thru_hole circle (at 2.5 0) (size 1.6 1.6) (drill 0.8) '
+            '(layers "*.Cu") (net 2 "B"))\n\t)\n'
+            '\t(footprint "SMD" (layer "F.Cu")\n\t\t(at 45 20)\n'
+            '\t\t(property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(pad "1" smd rect (at -1 0) (size 1.2 1.4) (layers "F.Cu") '
+            '(net 1 "A"))\n'
+            '\t\t(pad "2" smd rect (at 1 0) (size 1.2 1.4) (layers "F.Cu") '
+            '(net 2 "B"))\n\t)\n)\n')
 
 
 REGION = (0.0, 0.0, 30.0, 20.0)
@@ -261,6 +287,81 @@ if __name__ == "__main__":
     check(len(allp) == 8, f"refs=None loads all 8 footprints ({len(allp)})")
     check(sum(len(p.pads) for p in allp.values()) == 36,
           "pad slices cover the board's 36 pads exactly once")
+
+    print("=== real F.CrtYd courtyard vs pad-bbox proxy (finding #5) ===")
+    import tempfile, shutil
+    from dataclasses import replace
+    cyd = tempfile.mkdtemp()
+    try:
+        cyb = os.path.join(cyd, "cy.kicad_pcb")
+        _write_courtyard_board(cyb)
+        cp = parts_from_board(cyb)
+        c1, r1 = cp["C1"], cp["R1"]
+
+        # parse: the radial's real 13x13 courtyard is attached in local frame;
+        # the SMD (no courtyard layer) stays None -> pad-bbox proxy fallback.
+        check(c1.local_courtyard is not None
+              and max(abs(a - b) for a, b in
+                      zip(c1.local_courtyard, (-6.5, -6.5, 6.5, 6.5))) < 1e-6,
+              f"radial's real F.CrtYd (13x13 circle) parses to a local rect "
+              f"({c1.local_courtyard})")
+        check(r1.local_courtyard is None,
+              "an SMD part with no courtyard layer keeps local_courtyard=None "
+              "(pad-bbox proxy fallback, unchanged)")
+
+        # the collision courtyard now reflects the real BODY, not the pad strip:
+        # ~13.5 mm (13 + 2*margin) vs the ~7.1 mm pad-bbox proxy.
+        real = part_courtyard(c1)
+        proxy = part_courtyard(replace(c1, local_courtyard=None))
+        rw, pw = real[2] - real[0], proxy[2] - proxy[0]
+        check(abs(rw - 13.5) < 1e-6 and rw > 1.8 * pw,
+              f"radial courtyard is the {rw:.1f} mm body+margin, not the "
+              f"{pw:.1f} mm pad strip")
+
+        # THE CORRECTNESS WIN: two radials 8 mm centre-to-centre. Their pads
+        # (span 5 mm) clear at 8 mm, but their 13 mm BODIES overlap. With the
+        # real courtyard the model REJECTS it; with the old pad-bbox proxy it
+        # wrongly passes — the exact bug (region.py reported such placements
+        # "feasible" while parts sat bodily on top of each other).
+        a, b = replace(c1, ref="A"), replace(c1, ref="B")
+        fence = (10.0, 10.0, 40.0, 20.0)
+        states = [(20.0, 20.0, 0.0), (28.0, 20.0, 0.0)]   # 8 mm apart
+        real_bad = any("overlap" in s for s in
+                       PlacementModel([a, b], fence).problems(states))
+        proxy_bad = any("overlap" in s for s in PlacementModel(
+            [replace(a, local_courtyard=None), replace(b, local_courtyard=None)],
+            fence).problems(states))
+        check(real_bad and not proxy_bad,
+              "two radials 8 mm apart: the model SEES the body overlap with the "
+              "real courtyard, and (the bug) MISSED it with the pad-bbox proxy")
+
+        # UNION FLOOR: a courtyard SMALLER than the pad span must never shrink
+        # the keep-out below the pads (else the placer could allow a pad-on-pad
+        # overlap — the very thing this change prevents). Pads span 10 mm, the
+        # F.CrtYd is a tiny 2x2: the keep-out stays the 10 mm pad span + margin.
+        big_pads = (Pad(-5.0, 0.0, ["F.Cu"], 0, "A", 1.0, 1.0, False, 0.0, 0.0),
+                    Pad(5.0, 0.0, ["F.Cu"], 0, "B", 1.0, 1.0, False, 0.0, 0.0))
+        tiny = Part("T", 0.0, 0.0, 0.0, big_pads,
+                    local_courtyard=(-1.0, -1.0, 1.0, 1.0))
+        wct = part_courtyard(tiny)
+        check(abs((wct[2] - wct[0]) - 11.5) < 1e-6,
+              f"union floor: a courtyard smaller than the pads keeps the pad "
+              f"span (11.5 mm = 10 pads + 2*0.25), not the 2 mm courtyard "
+              f"({wct[2] - wct[0]:.2f})")
+
+        # ROTATION on an ASYMMETRIC courtyard: authored 10 (wide) x 6 (tall),
+        # off origin; at rot=90 the world courtyard must SWAP to 6.5 x 10.5
+        # (proves the courtyard rotates WITH the part, not just the symmetric
+        # circle the earlier checks used).
+        asym = Part("R", 0.0, 0.0, 90.0,
+                    (Pad(0.0, 0.0, ["F.Cu"], 0, "A", 0.5, 0.5, False, 0.0, 0.0),),
+                    local_courtyard=(-1.0, -3.0, 9.0, 3.0))
+        wa = part_courtyard(asym)
+        check(abs((wa[2] - wa[0]) - 6.5) < 1e-6 and abs((wa[3] - wa[1]) - 10.5) < 1e-6,
+              f"asymmetric courtyard at rot=90 swaps to 6.5 x 10.5 "
+              f"({wa[2] - wa[0]:.2f} x {wa[3] - wa[1]:.2f})")
+    finally:
+        shutil.rmtree(cyd, ignore_errors=True)
 
     print("=== net weights via writeback's class loader ===")
     w = net_weights_from_project(AMP, ["GND", "B+250"])

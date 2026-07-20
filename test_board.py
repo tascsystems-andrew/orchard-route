@@ -212,6 +212,63 @@ def check_sparkfun(board):
     check(len(board.vias) > 300, f"vias parsed ({len(board.vias)})")
 
 
+def check_courtyards():
+    """board._footprint_courtyard parses F.CrtYd/B.CrtYd graphics to a local
+    bbox (one per footprint, in file order) and ignores every other layer —
+    the real THT body keep-out (finding #5)."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, "cy.kicad_pcb")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(
+                '(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (44 "Edge.Cuts" user) '
+                '(45 "F.CrtYd" user) (46 "B.CrtYd" user) (37 "F.SilkS" user))\n'
+                '\t(net 0 "")\n'
+                '\t(gr_rect (start 0 0) (end 80 40) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(footprint "A" (layer "F.Cu") (at 10 10)\n'
+                '\t\t(property "Reference" "CIRC" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_circle (center 0 0) (end 6.5 0) (layer "F.CrtYd"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "B" (layer "F.Cu") (at 30 10)\n'
+                '\t\t(property "Reference" "RECT" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_rect (start -3 -2) (end 3 2) (layer "F.CrtYd"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "C" (layer "F.Cu") (at 50 10)\n'
+                '\t\t(property "Reference" "POLY" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_line (start -99 -99) (end 99 99) (layer "F.SilkS"))\n'
+                '\t\t(fp_poly (pts (xy 0 0) (xy 10 0) (xy 10 4) (xy 0 4)) (layer "F.CrtYd"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "D" (layer "F.Cu") (at 70 10)\n'
+                '\t\t(property "Reference" "NONE" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_line (start -5 -5) (end 5 5) (layer "F.SilkS"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                # a lone top-semicircle arc (centre 0,0 r=10) — its start/mid/end
+                # vertices only reach y>=0, so a conservative keep-out must be
+                # the FULL-CIRCLE bbox, not the 3-point bbox that misses y<0.
+                '\t(footprint "E" (layer "F.Cu") (at 30 30)\n'
+                '\t\t(property "Reference" "ARC" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_arc (start 10 0) (mid 0 10) (end -10 0) (layer "F.CrtYd"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                ')\n')
+        cy = load_board(p).footprint_courtyards
+        check(len(cy) == 5, f"one courtyard entry per footprint, in order ({len(cy)})")
+        check(cy[0] == (-6.5, -6.5, 6.5, 6.5), f"fp_circle -> radius bbox ({cy[0]})")
+        check(cy[1] == (-3.0, -2.0, 3.0, 2.0), f"fp_rect -> corner bbox ({cy[1]})")
+        check(cy[2] == (0.0, 0.0, 10.0, 4.0),
+              f"fp_poly -> vertex bbox, asymmetric-off-origin preserved ({cy[2]})")
+        check(cy[3] is None,
+              "silk-only footprint has no courtyard — the F.SilkS decoys in C "
+              "and D are ignored (layer filter), not folded into the bbox")
+        check(cy[4] is not None
+              and max(abs(a - b) for a, b in zip(cy[4], (-10.0, -10.0, 10.0, 10.0))) < 1e-6,
+              f"fp_arc -> full-circle bbox (conservative superset, reaches y<0 "
+              f"the vertices never touch): {cy[4]}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     checked = 0
 
@@ -220,6 +277,7 @@ if __name__ == "__main__":
     summarize(brd)
     check_common(brd)
     check_parser(brd)
+    check_courtyards()
     checked += 1
 
     # Third-party bench boards (gitignored; skipped on a fresh clone) exercise
