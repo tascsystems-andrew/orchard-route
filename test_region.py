@@ -890,6 +890,61 @@ def test_pile_report_vs_named_scatter():
           "re-scattered")
 
 
+def test_list_courtyards():
+    """--list-courtyards (finding #5): reports each footprint's courtyard w x h,
+    flags the pad-bbox PROXY vs a real F.CrtYd, and never silently lists the
+    whole board on an empty filter."""
+    print("=== --list-courtyards: real-vs-proxy census ===")
+    import io
+    from contextlib import redirect_stdout
+    from region import _list_courtyards
+    src = os.path.join(SYN_DIR, "courtyard", "cy.kicad_pcb")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    with open(src, "w", encoding="utf-8") as f:
+        f.write(
+            '(kicad_pcb (version 20240108) (generator "t")\n'
+            '\t(layers (0 "F.Cu" signal) (44 "Edge.Cuts" user) (45 "F.CrtYd" user))\n'
+            '\t(net 0 "")\n'
+            '\t(gr_rect (start 0 0) (end 40 20) (layer "Edge.Cuts") (width 0.1))\n'
+            '\t(footprint "Rad" (layer "F.Cu") (at 10 10)\n'
+            '\t\t(property "Reference" "REAL" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(fp_circle (center 0 0) (end 6.5 0) (layer "F.CrtYd"))\n'
+            '\t\t(pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8) '
+            '(layers "*.Cu") (net 0 "")))\n'
+            '\t(footprint "Smd" (layer "F.Cu") (at 30 10)\n'
+            '\t\t(property "Reference" "PROXY" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(pad "1" smd rect (at 0 0) (size 2 1) (layers "F.Cu") (net 0 "")))\n'
+            ')\n')
+
+    def run(refs):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _list_courtyards(src, refs)
+        return buf.getvalue()
+
+    out = run(["REAL", "PROXY", "BOGUS"])
+    lines = out.splitlines()
+    real_line = next(l for l in lines if l.strip().startswith("REAL"))
+    proxy_line = next(l for l in lines if l.strip().startswith("PROXY"))
+    check("13.00" in real_line and "169.00" in real_line and "[proxy]" not in real_line,
+          f"REAL: real 13x13 courtyard (169 mm2), NOT flagged proxy ({real_line.strip()})")
+    check("[proxy]" in proxy_line,
+          f"PROXY (no F.CrtYd): flagged [proxy] ({proxy_line.strip()})")
+    check(any("BOGUS" in l and "not on this board" in l for l in lines),
+          "a bogus ref is reported '(not on this board)'")
+    check("1/2 from real courtyard graphics, 1 pad-bbox proxy" in out,
+          f"summary counts real vs proxy ({[l for l in lines if 'summary' in l]})")
+
+    # a non-None but EMPTY selection lists nothing — never the whole board
+    empty = run([])
+    check("0/0" in empty and "REAL" not in empty,
+          "an empty --components selection lists nothing, not the whole board")
+
+    whole = run(None)
+    check("REAL" in whole and "PROXY" in whole and "2 footprint(s)" in whole,
+          "refs=None lists the whole board (header count matches)")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -998,6 +1053,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("auto_fix", test_auto_fix_locked), ("pile", test_offboard_pile),
          ("pile_explicit", test_pile_explicit_required),
          ("pile_report", test_pile_report_vs_named_scatter),
+         ("list_courtyards", test_list_courtyards),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),
          ("acceptance", test_acceptance)]

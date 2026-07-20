@@ -96,6 +96,11 @@ class Board:
                                   # () when the file has no Edge.Cuts at all.
                                   # A single-outline board yields exactly one,
                                   # whose bbox equals origin_mm/size_mm.
+    footprint_courtyards: tuple = ()  # one entry per footprint IN _footprints()
+                                  # ORDER: the local-frame F.CrtYd/B.CrtYd bbox
+                                  # rect (x0,y0,x1,y1) or None. The real body
+                                  # keep-out for THT parts whose body overhangs
+                                  # its pads (place._local_geometry prefers it).
 
 
 # ── s-expression parsing ──────────────────────────────────────────────────────
@@ -248,6 +253,83 @@ def _fp_frame(fp):
     fy = f_at[1] if len(f_at) > 1 else 0.0
     frot = f_at[2] if len(f_at) > 2 else 0.0
     return fx, fy, frot
+
+
+def _footprint_courtyard(fp):
+    """Local-frame bbox rect (x0, y0, x1, y1) of a footprint's F.CrtYd/B.CrtYd
+    graphics, or None when it draws no courtyard.
+
+    Coordinates are the footprint's own LOCAL, UNROTATED frame — exactly the
+    frame place._local_geometry backs pads out to — so the footprint (at x y rot)
+    transform is applied later by the placement, identically for pads and
+    courtyard. This is the real body keep-out for THT parts whose body overhangs
+    its pad span (radials, box-film caps, power resistors, relays), where the
+    pad-bbox proxy is 14-53% of the true area (feedback/courtyard-model-*).
+
+    fp_circle/fp_arc are bounded by their FULL-CIRCLE bbox (centre +/- radius):
+    an arc bulges past its start/mid/end vertices, so a keep-out must be a
+    conservative superset, never smaller than the drawn body. Flip is not
+    mirrored here — matching how pads are read (no mirror), so a flipped part's
+    pad and courtyard stay in one frame."""
+    lo_x = lo_y = math.inf
+    hi_x = hi_y = -math.inf
+    for g in fp:
+        if not (isinstance(g, list) and g and isinstance(g[0], str)
+                and g[0].startswith("fp_")):
+            continue
+        kind = g[0][3:]
+        if kind not in ("line", "rect", "arc", "circle", "poly"):
+            continue
+        layer = _kid(g, "layer")
+        if not (layer and len(layer) > 1
+                and str(layer[1]) in ("F.CrtYd", "B.CrtYd")):
+            continue
+        pts = []
+        if kind == "circle":
+            c = _floats(_kid(g, "center") or ["center"])
+            e = _floats(_kid(g, "end") or ["end"])
+            if len(c) >= 2 and len(e) >= 2:
+                r = math.hypot(e[0] - c[0], e[1] - c[1])
+                pts += [(c[0] - r, c[1] - r), (c[0] + r, c[1] + r)]
+        elif kind == "arc":
+            # An arc bulges past its start/mid/end vertices, so bound it by the
+            # FULL-CIRCLE bbox (centre +/- radius) — a conservative superset,
+            # never smaller than the drawn body. Same treatment the Edge.Cuts
+            # scan gives arcs; both KiCad dialects handled.
+            s = _floats(_kid(g, "start") or ["start"])
+            e = _floats(_kid(g, "end") or ["end"])
+            if _kid(g, "mid") is not None:          # KiCad 6+: start/mid/end on the curve
+                m = _floats(_kid(g, "mid"))
+                cc = (_circumcenter((s[0], s[1]), (m[0], m[1]), (e[0], e[1]))
+                      if len(s) >= 2 and len(m) >= 2 and len(e) >= 2 else None)
+                if cc:
+                    r = math.hypot(s[0] - cc[0], s[1] - cc[1])
+                    pts += [(cc[0] - r, cc[1] - r), (cc[0] + r, cc[1] + r)]
+                elif len(s) >= 2 and len(e) >= 2:   # collinear: the chord bounds it
+                    pts += [(s[0], s[1]), (e[0], e[1])]
+            elif len(s) >= 2 and len(e) >= 2:       # KiCad 5: (start)=centre, (end) on circle
+                r = math.hypot(e[0] - s[0], e[1] - s[1])
+                pts += [(s[0] - r, s[1] - r), (s[0] + r, s[1] + r)]
+        elif kind == "poly":
+            pn = _kid(g, "pts")
+            for xy in (pn[1:] if pn else []):
+                if isinstance(xy, list) and xy and xy[0] == "xy":
+                    f = _floats(xy)
+                    if len(f) >= 2:
+                        pts.append((f[0], f[1]))
+        else:  # line / rect — the named vertices bound the shape
+            for key in ("start", "end"):
+                node = _kid(g, key)
+                if node is not None:
+                    f = _floats(node)
+                    if len(f) >= 2:
+                        pts.append((f[0], f[1]))
+        for px, py in pts:
+            lo_x = min(lo_x, px); hi_x = max(hi_x, px)
+            lo_y = min(lo_y, py); hi_y = max(hi_y, py)
+    if lo_x is math.inf:
+        return None
+    return (lo_x, lo_y, hi_x, hi_y)
 
 
 def _edge_shapes(root):
@@ -585,7 +667,9 @@ def load_board(path: str) -> Board:
 
     shapes = _edge_shapes(root)
     origin, size = _edge_bbox_of(shapes)
+    courtyards = tuple(_footprint_courtyard(fp) for fp in _footprints(root))
     return Board(path=path, origin_mm=origin, size_mm=size,
                  copper_layers=copper_layers, nets=nets,
                  pads=pads, tracks=tracks, vias=vias,
-                 outline_regions=tuple(outline_regions(shapes)))
+                 outline_regions=tuple(outline_regions(shapes)),
+                 footprint_courtyards=courtyards)

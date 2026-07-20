@@ -25,10 +25,12 @@ State model and hard rules (spec section 3):
 - positions snap to a placement grid (grid_mm, default 0.5) anchored at the
   region origin; rotations come from orientation_set when given, else
   {0, 90, 180, 270} plus the part's own starting angle;
-- courtyard proxy = pad-bbox union + 0.25 mm margin, computed from board.py
-  pads (board.py parses no courtyard layers yet — the margin is surfaced in
-  AnnealResult.courtyard_margin_mm so region.py can report the limitation
-  in diagnostics instead of hiding it);
+- courtyard = the REAL F.CrtYd/B.CrtYd rect when the footprint carries one
+  (board.footprint_courtyards, unioned with the pad bbox as a floor), else a
+  pad-bbox proxy; + 0.25 mm margin either way. The proxy fallback is fine for
+  SMD/ICs (pad bbox ~ body) but was catastrophic for THT bodies overhanging
+  their pads until real courtyards landed; the margin is surfaced in
+  AnnealResult.courtyard_margin_mm for diagnostics;
 - hard rejection, never penalty: courtyard overlap movable-vs-movable and
   movable-vs-frozen (obstacles), courtyard leaving the region fence, and
   ANY violated constraint from constraints.py;
@@ -75,6 +77,11 @@ class Part:
     locked: bool = False   # the footprint is LOCKED in KiCad (writeback.
                            # FootprintRecord.locked, propagated here so the
                            # region solver can auto-fix locked parts)
+    local_courtyard: tuple = None  # board.Board.footprint_courtyards entry: the
+                           # real F.CrtYd/B.CrtYd bbox in the footprint-LOCAL
+                           # frame, or None. When present _local_geometry uses
+                           # it (unioned with the pads) instead of the pad-bbox
+                           # proxy — the true body keep-out for overhanging THT.
 
 
 @dataclass(frozen=True)
@@ -161,6 +168,17 @@ def _local_geometry(part, margin_mm):
         terms.append((ox, oy, p.net_name))
     if not terms:
         lo_x = lo_y = hi_x = hi_y = 0.0
+    # Prefer the REAL courtyard when the footprint carries one, unioned with the
+    # pad bbox so a part can never model smaller than its own pads. Both rects
+    # are in the same footprint-local frame, so the union is direct and _rot in
+    # _world_rect places it. The pad-bbox proxy remains the fallback for parts
+    # with no courtyard layer (SMD/ICs, where pad bbox ~ body). This is the fix
+    # for THT bodies overhanging their pads (feedback/courtyard-model-*): the
+    # proxy alone let radials/box-caps nest bodily inside one another.
+    lc = part.local_courtyard
+    if lc is not None:
+        lo_x = min(lo_x, lc[0]); lo_y = min(lo_y, lc[1])
+        hi_x = max(hi_x, lc[2]); hi_y = max(hi_y, lc[3])
     return terms, (lo_x - margin_mm, lo_y - margin_mm,
                    hi_x + margin_mm, hi_y + margin_mm)
 
@@ -549,6 +567,15 @@ def parts_from_board(board_path, refs=None):
     for r in records:
         offsets[r.uref] = off
         off += r.n_pads
+    # board.py's footprint_courtyards is aligned with board_footprints ORDER
+    # (both walk the identical node order — the same invariant the pad-count
+    # assert above guards). Key it by uref so lookups survive the ref/ref#N
+    # addressing. If the two ever disagree in count, fall back to no courtyard
+    # rather than misattribute one part's body to another.
+    court = {}
+    if len(brd.footprint_courtyards) == len(records):
+        court = {r.uref: brd.footprint_courtyards[i]
+                 for i, r in enumerate(records)}
     out = {}
     for key in ([r.uref for r in records] if refs is None else refs):
         rec = resolve_footprint(records, key)
@@ -556,7 +583,8 @@ def parts_from_board(board_path, refs=None):
         out[key] = Part(ref=key, x_mm=rec.x_mm, y_mm=rec.y_mm,
                         rot_deg=rec.rot_deg,
                         pads=tuple(brd.pads[o:o + rec.n_pads]),
-                        locked=rec.locked)
+                        locked=rec.locked,
+                        local_courtyard=court.get(rec.uref))
     return out
 
 

@@ -52,9 +52,11 @@ first two are why a candidate is a PROPOSAL, not a finished layout:
   at a finer pitch, or expect to nudge a few segments by hand.
 - CUSTOM PAD SHAPES are read as their anchor rect (see custom_pad_refs). Any
   affected footprint in the fence is named in diagnostics.geometry_warnings.
-- Courtyards are the pad-bbox proxy, not the real courtyard layers, so the
-  candidate can place parts closer than a real courtyard check would allow.
-  The margin used is reported in diagnostics.anneal.courtyard_margin_mm.
+- Courtyards use the real F.CrtYd/B.CrtYd graphics where a footprint draws
+  them, else a pad-bbox proxy (which under-models THT bodies overhanging their
+  pads). diagnostics.courtyard_source reports the real-vs-proxy split per run,
+  and the margin is in diagnostics.anneal.courtyard_margin_mm. Run
+  --list-courtyards to see which footprints are proxied.
 - Placement is cardinal rotations only, no side swap, no 45s; the region is
   assumed to start unrouted; and candidates are independent — committing one
   region then solving its neighbour is path-dependent (revisit fences).
@@ -1044,6 +1046,12 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     model = None if impossible else PlacementModel(
         parts, region, specs, obstacles=obstacles,
         fixed_points=fixed_points, net_weights=net_weights)
+    # how many placed footprints the collision model models from their REAL
+    # F.CrtYd vs the pad-bbox proxy — so the note below tells the driver the
+    # truth about this run's model instead of a stale blanket "proxy" claim.
+    n_real_court = sum(1 for r in components
+                       if all_parts[r].local_courtyard is not None)
+    n_proxy_court = len(components) - n_real_court
     diagnostics = {
         "region": list(region),
         "area": int(area) if area is not None else None,
@@ -1065,9 +1073,14 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         "seeded": seeded,
         "boundary_nets": [asdict(t) for t in terminals],
         "fixed_inside_nets": sorted(fixed_inside),
+        "courtyard_source": {"real_crtyd": n_real_court,
+                             "pad_bbox_proxy": n_proxy_court},
         "courtyard_note": (
-            "courtyards are a v1 proxy: pad-bbox union + margin "
-            "(board.py parses no courtyard layers yet)"),
+            f"courtyards: the real F.CrtYd/B.CrtYd where the footprint draws one "
+            f"({n_real_court} of {len(components)} placed), else a pad-bbox "
+            f"proxy ({n_proxy_court}); + {COURTYARD_MARGIN_MM} mm margin either "
+            f"way. The proxy under-models THT bodies that overhang their pads — "
+            f"run --list-courtyards to see which parts are proxied"),
         "geometry_warnings": _geometry_warnings(src_text, movable,
                                                 obstacle_refs),
         "infeasible_reason": None,
@@ -1504,8 +1517,10 @@ def _print_summary(result, out_dir):
               f"{an['rejected_infeasible']} infeasible), {an['reheats']} "
               f"reheat(s), initial energy {an['initial_energy']}"
               + (", START REPAIRED" if an["repaired_start"] else ""))
-        print(f"  courtyards      : pad-bbox union + "
-              f"{an['courtyard_margin_mm']} mm — {d['courtyard_note']}")
+        cs = d.get("courtyard_source") or {}
+        print(f"  courtyards      : {cs.get('real_crtyd', 0)} real F.CrtYd, "
+              f"{cs.get('pad_bbox_proxy', 0)} pad-bbox proxy, "
+              f"+{an['courtyard_margin_mm']} mm margin — {d['courtyard_note']}")
     lt = d.get("lattice")
     if lt:
         print(f"  lattice         : {lt['W']}x{lt['H']}x{lt['L']} = "
@@ -1554,6 +1569,56 @@ def _list_regions(board_path):
     return 0
 
 
+def _list_courtyards(board_path, refs=None):
+    """Print each footprint's courtyard — ref, w x h, area, and SOURCE (real
+    F.CrtYd/B.CrtYd graphics vs the pad-bbox proxy fallback). Finding #5's ask:
+    it makes seeding, density preflight, band sizing and partition sanity a
+    one-liner for any driver, and removes the whole class of external
+    courtyard-re-parsing bugs the field report hit.
+
+    Dimensions are the courtyard's own extent (no placement margin — the placer
+    adds COURTYARD_MARGIN_MM on top); the [proxy] flag names exactly the parts
+    whose body the tool is guessing from pads, so a driver knows which numbers
+    to distrust for overhanging THT before leaning on them."""
+    from place import parts_from_board, _local_geometry
+    parts = parts_from_board(board_path)
+    if refs is None:
+        keys = sorted(parts)                     # whole board
+    else:
+        # Resolve each requested ref to its uref(s): a plain designator that is
+        # DUPLICATED on the board (5755 -> 5755#1..#3) lists every instance —
+        # the same addressing the placement --components path uses, so a driver
+        # can reuse one ref list across both. A non-None but empty selection
+        # (e.g. --components ' , ,') lists nothing, never the whole board.
+        keys = []
+        for k in refs:
+            matches = [u for u in sorted(parts)
+                       if u == k or u.split("#")[0] == k]
+            keys.extend(matches or [k])          # keep k to report it missing
+        keys = list(dict.fromkeys(keys))         # dedup, preserve order
+    print(f"board       : {os.path.basename(board_path)}")
+    rows, n_real, n_named = [], 0, 0
+    for k in keys:
+        p = parts.get(k)
+        if p is None:
+            rows.append(f"  {k:<12} (not on this board)")
+            continue
+        _, local = _local_geometry(p, 0.0)
+        w, h = local[2] - local[0], local[3] - local[1]
+        real = p.local_courtyard is not None
+        n_real += real
+        n_named += 1
+        rows.append(f"  {k:<12} {w:6.2f} x {h:6.2f} mm  {w * h:8.2f} mm2"
+                    f"{'' if real else '  [proxy]'}")
+    print(f"courtyards  : {n_named} footprint(s) — w x h (mm), no margin; "
+          f"[proxy] = pad-bbox guess, not real F.CrtYd")
+    for row in rows:
+        print(row)
+    print(f"summary     : {n_real}/{n_named} from real courtyard graphics, "
+          f"{n_named - n_real} pad-bbox proxy")
+    return 0
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
@@ -1575,6 +1640,10 @@ def main(argv=None):
     ap.add_argument("--list-connections", default=None, metavar="R1,R2,...",
                     help="print the net edges among these refs (advisory DATA "
                          "for partitioning — the tool never groups), then exit")
+    ap.add_argument("--list-courtyards", action="store_true",
+                    help="print every footprint's courtyard (ref, w x h, area, "
+                         "and whether it is the REAL F.CrtYd or a pad-bbox "
+                         "proxy), then exit. Optionally filter with --components")
     ap.add_argument("--constraint", action="append", default=[],
                     help="repeatable, e.g. \"min_distance(R4,C8,5)\"")
     ap.add_argument("--no-auto-fix-locked", action="store_true",
@@ -1604,6 +1673,10 @@ def main(argv=None):
 
     if args.list_regions:
         return _list_regions(args.board)
+    if args.list_courtyards:
+        refs = None if args.components is None else \
+            [c.strip() for c in args.components.split(",") if c.strip()]
+        return _list_courtyards(args.board, refs)
     if args.list_connections:
         refs = [c.strip() for c in args.list_connections.split(",") if c.strip()]
         adj = net_adjacency(args.board, refs)
