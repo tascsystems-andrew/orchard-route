@@ -90,6 +90,12 @@ class Part:
                            # in XY (opposite sides), so the collision model skips
                            # cross-side courtyard pairs; through-hole pads still
                            # block both copper layers (that stays in the pad check).
+    height_mm: float = None  # above-board height parsed from the footprint
+                           # (board.Board.footprint_heights) or None. RAW — the
+                           # heights.resolve policy layer overlays overrides and a
+                           # family upper bound on top for the z-clearance check.
+    fpid: str = None       # library id "LIB:NAME" (board.Board.footprint_fpids)
+                           # — the key the heights table / family heuristic use.
 
 
 @dataclass(frozen=True)
@@ -975,7 +981,7 @@ def parts_from_board(board_path, refs=None):
     # assert above guards). Key it by uref so lookups survive the ref/ref#N
     # addressing. If the two ever disagree in count, fall back to no courtyard
     # rather than misattribute one part's body to another.
-    court, sheet, side = {}, {}, {}
+    court, sheet, side, height, fpid = {}, {}, {}, {}, {}
     if len(brd.footprint_courtyards) == len(records):
         court = {r.uref: brd.footprint_courtyards[i]
                  for i, r in enumerate(records)}
@@ -984,6 +990,12 @@ def parts_from_board(board_path, refs=None):
                  for i, r in enumerate(records)}
     if len(brd.footprint_sides) == len(records):
         side = {r.uref: brd.footprint_sides[i]
+                for i, r in enumerate(records)}
+    if len(brd.footprint_heights) == len(records):
+        height = {r.uref: brd.footprint_heights[i]
+                  for i, r in enumerate(records)}
+    if len(brd.footprint_fpids) == len(records):
+        fpid = {r.uref: brd.footprint_fpids[i]
                 for i, r in enumerate(records)}
     out = {}
     for key in ([r.uref for r in records] if refs is None else refs):
@@ -995,7 +1007,9 @@ def parts_from_board(board_path, refs=None):
                         locked=rec.locked,
                         local_courtyard=court.get(rec.uref),
                         sheet=sheet.get(rec.uref),
-                        side=side.get(rec.uref, "F"))
+                        side=side.get(rec.uref, "F"),
+                        height_mm=height.get(rec.uref),
+                        fpid=fpid.get(rec.uref))
     return out
 
 
