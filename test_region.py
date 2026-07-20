@@ -1175,6 +1175,86 @@ def test_pad_clearance():
           "(A/B measurement only)")
 
 
+def test_two_sided():
+    """§3 two-sided: a back part's body may share XY with a front part's (they are
+    on opposite sides), so a fence too small for two SAME-side bodies fits one
+    front + one back; and density/preflight count PER SIDE (the busier side),
+    never front+back summed, so a solvable two-sided layout is not false-refused
+    (the cardinal preflight sin). Parts carry a real 2x2 courtyard on their own
+    side's CrtYd layer -> part_courtyard 2.5x2.5 = 6.25 mm2."""
+    print("=== two-sided placement (§3) ===")
+
+    def board(path, specs):                 # specs: [(ref, "F"|"B")]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fps = []
+        for i, (ref, side) in enumerate(specs):
+            cu = "F.Cu" if side == "F" else "B.Cu"
+            cy = "F.CrtYd" if side == "F" else "B.CrtYd"
+            fps.append(
+                f'\t(footprint "R" (layer "{cu}") (at {2 + (i % 6) * 3} '
+                f'{2 + (i // 6) * 3})\n'
+                f'\t\t(property "Reference" "{ref}" (at 0 0 0) (layer "F.SilkS"))\n'
+                f'\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+                f'(layer "{cy}") (width 0.05))\n'
+                f'\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "{cu}") '
+                f'(net 0 "")))')
+        with open(path, "w") as f:
+            f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                    '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                    '(44 "Edge.Cuts" user) (45 "F.CrtYd" user) '
+                    '(46 "B.CrtYd" user))\n\t(net 0 "")\n'
+                    '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") '
+                    '(width 0.1))\n' + "\n".join(fps) + "\n)\n")
+
+    # CONTROL: two FRONT bodies cannot both fit a 4x4 fence (each 2.5x2.5, and
+    # 2*2.5 > 4 on both axes) -> the search returns nothing.
+    ctl = os.path.join(SYN_DIR, "twosided", "ctl.kicad_pcb")
+    board(ctl, [("A", "F"), ("B", "F")])
+    r_ctl = optimize_region(ctl, ["A", "B"], (0.0, 0.0, 4.0, 4.0), k=2,
+                            sweeps=40, seed=0,
+                            out_dir=os.path.join(OUT_DIR, "2s-ctl"))
+    check(not r_ctl.candidates,
+          "two FRONT bodies do NOT fit a 4x4 fence (each 2.5x2.5) — 0 candidates")
+
+    # THE WIN: one FRONT + one BACK co-locate in the SAME 4x4 fence.
+    win = os.path.join(SYN_DIR, "twosided", "win.kicad_pcb")
+    board(win, [("A", "F"), ("B", "B")])
+    r_win = optimize_region(win, ["A", "B"], (0.0, 0.0, 4.0, 4.0), k=2,
+                            sweeps=40, seed=0,
+                            out_dir=os.path.join(OUT_DIR, "2s-win"))
+    check(bool(r_win.candidates),
+          "one FRONT + one BACK body co-locate in that same 4x4 fence (§3 — the "
+          "'free the front' move) where two same-side bodies could not")
+    dw = r_win.diagnostics["density"]
+    check(dw.get("two_sided") is True and abs(dw["front_mm2"] - 6.25) < 0.1
+          and abs(dw["back_mm2"] - 6.25) < 0.1,
+          f"density breaks out per side (F {dw.get('front_mm2')} / "
+          f"B {dw.get('back_mm2')} mm2)")
+    ts = r_win.diagnostics.get("two_sided") or {}
+    check(ts.get("back_parts") == ["B"]
+          and ts.get("z_clearance_verified") is False,
+          "back-side parts are NAMED and z-clearance is flagged UNVERIFIED — the "
+          "run does not silently bless a component that may not fit the chassis")
+
+    # PER-SIDE, NOT SUMMED: 10 front + 10 back — sum is 125% of a 100 mm2 fence
+    # (would be 'impossible' if summed) but the busier side is 62.5%, so it reads
+    # TIGHT and preflight does NOT refuse it.
+    big = os.path.join(SYN_DIR, "twosided", "big.kicad_pcb")
+    board(big, [(f"F{i}", "F") for i in range(10)]
+          + [(f"B{i}", "B") for i in range(10)])
+    r_big = optimize_region(
+        big, [f"F{i}" for i in range(10)] + [f"B{i}" for i in range(10)],
+        (0.0, 0.0, 10.0, 10.0), k=1, sweeps=10, seed=0,
+        out_dir=os.path.join(OUT_DIR, "2s-big"))
+    db = r_big.diagnostics["density"]
+    check(db["verdict"] == "tight" and abs(db["utilization"] - 0.625) < 0.02,
+          f"10 front + 10 back (sum 125%, busier side 62.5%) reads TIGHT, not "
+          f"impossible — per-side, not summed ({db['utilization']:.0%})")
+    check(r_big.diagnostics["preflight"] == [],
+          "preflight does NOT declare the two-sided layout impossible — summing "
+          "front+back would have (the cardinal false-negative, avoided)")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -1286,6 +1366,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("list_courtyards", test_list_courtyards),
          ("hole_keepouts", test_hole_keepouts),
          ("pad_clearance", test_pad_clearance),
+         ("two_sided", test_two_sided),
          ("density", test_density_preflight),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),

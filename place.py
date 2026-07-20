@@ -85,6 +85,11 @@ class Part:
     sheet: str = None      # board.Board.footprint_sheets entry: the schematic
                            # sheet path (KiCad (sheetname ...)) or None — a
                            # ready-made human grouping (floorplan.py reads it).
+    side: str = "F"        # board.Board.footprint_sides entry: "F" or "B". A
+                           # back-side body cannot collide with a front-side body
+                           # in XY (opposite sides), so the collision model skips
+                           # cross-side courtyard pairs; through-hole pads still
+                           # block both copper layers (that stays in the pad check).
 
 
 @dataclass(frozen=True)
@@ -423,8 +428,8 @@ class PlacementModel:
     with the parts list."""
 
     def __init__(self, parts, region, constraints=(), *, obstacles=(),
-                 keepouts=(), fixed_points=None, net_weights=None,
-                 margin_mm=COURTYARD_MARGIN_MM, edge_tol_mm=1.0,
+                 obstacle_sides=(), keepouts=(), fixed_points=None,
+                 net_weights=None, margin_mm=COURTYARD_MARGIN_MM, edge_tol_mm=1.0,
                  penalty_scale_mm=10.0, min_gap_mm=0.0, body_margin_mm=0.0,
                  pad_clearances=None, default_pad_clearance_mm=0.0,
                  frozen_pads=()):
@@ -447,6 +452,16 @@ class PlacementModel:
         # DRC crash (finding B). 0 keeps the old "no overlap" behaviour.
         self.min_gap_mm = float(min_gap_mm)
         self.obstacles = [tuple(float(v) for v in r) for r in obstacles]
+        # per-part side ("F"/"B") and per-obstacle side. Two BODIES only collide
+        # when they are on the SAME side — a back-flipped part's body sits on the
+        # far side and may share XY with a front body (feedback/placement-
+        # fidelity §3). Through-hole pad copper still blocks both sides, but that
+        # is the pad check's job (layer-aware), not the courtyard's. An obstacle
+        # side of None means "collide with either side" (old callers, unchanged).
+        self._sides = [getattr(p, "side", "F") or "F" for p in self.parts]
+        obs_sides = list(obstacle_sides)
+        self.obstacle_sides = [(obs_sides[i] if i < len(obs_sides) else None)
+                               for i in range(len(self.obstacles))]
         # circular mounting-hole keep-outs (cx, cy, radius) — hole + screw-head
         # clearance, already inflated by the caller. Movable courtyards are
         # hard-rejected against these, exactly like the frozen obstacles.
@@ -623,10 +638,15 @@ class PlacementModel:
         near = " overlap" if g <= 0 else f" are within {g:g} mm"
         for i in range(len(courts)):
             for j in range(i + 1, len(courts)):
-                if _too_close(courts[i], courts[j], g):
+                if self._sides[i] != self._sides[j]:   # opposite sides: no body
+                    continue                           # collision (pads still
+                if _too_close(courts[i], courts[j], g):  # checked by layer)
                     out.append(f"{self.refs[i]} and {self.refs[j]} "
                                f"courtyards{near}")
-            for ob in self.obstacles:
+            for oi, ob in enumerate(self.obstacles):
+                osd = self.obstacle_sides[oi]
+                if osd is not None and osd != self._sides[i]:
+                    continue
                 if _too_close(courts[i], ob, g):
                     out.append(f"{self.refs[i]} courtyard {near.strip()} a "
                                f"frozen obstacle at ({ob[0]:.2f}, {ob[1]:.2f})")
@@ -658,13 +678,19 @@ class PlacementModel:
             if r[0] < rx - 1e-9 or r[1] < ry - 1e-9 \
                     or r[2] > rx + rw + 1e-9 or r[3] > ry + rh + 1e-9:
                 return False, math.inf, math.inf, math.inf
-            for ob in self.obstacles:
+            si = self._sides[i]
+            for oi, ob in enumerate(self.obstacles):
+                osd = self.obstacle_sides[oi]
+                if osd is not None and osd != si:   # obstacle on the far side
+                    continue                        # cannot hit this body
                 if _too_close(r, ob, self.min_gap_mm):
                     return False, math.inf, math.inf, math.inf
-            for cx, cy, hr in self.keepouts:
+            for cx, cy, hr in self.keepouts:        # holes drill through: no side
                 if _rect_circle_overlap(r, cx, cy, hr):
                     return False, math.inf, math.inf, math.inf
-            for prev in courts:
+            for k, prev in enumerate(courts):
+                if self._sides[k] != si:            # opposite sides don't collide
+                    continue
                 if _too_close(r, prev, self.min_gap_mm):
                     return False, math.inf, math.inf, math.inf
             courts.append(r)
@@ -717,8 +743,8 @@ def _distinct(p1, p2, grid_mm):
 
 
 def anneal_region(parts, region, constraints=(), *, obstacles=(),
-                  keepouts=(), fixed_points=None, net_weights=None,
-                  grid_mm=0.5, margin_mm=COURTYARD_MARGIN_MM,
+                  obstacle_sides=(), keepouts=(), fixed_points=None,
+                  net_weights=None, grid_mm=0.5, margin_mm=COURTYARD_MARGIN_MM,
                   edge_tol_mm=1.0, penalty_scale_mm=10.0, min_gap_mm=0.0,
                   body_margin_mm=0.0, pad_clearances=None,
                   default_pad_clearance_mm=0.0, frozen_pads=(),
@@ -745,6 +771,7 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
     diagnostics-first contract.
     """
     model = PlacementModel(parts, region, constraints, obstacles=obstacles,
+                           obstacle_sides=obstacle_sides,
                            keepouts=keepouts, fixed_points=fixed_points,
                            net_weights=net_weights,
                            margin_mm=margin_mm, edge_tol_mm=edge_tol_mm,
@@ -948,13 +975,16 @@ def parts_from_board(board_path, refs=None):
     # assert above guards). Key it by uref so lookups survive the ref/ref#N
     # addressing. If the two ever disagree in count, fall back to no courtyard
     # rather than misattribute one part's body to another.
-    court, sheet = {}, {}
+    court, sheet, side = {}, {}, {}
     if len(brd.footprint_courtyards) == len(records):
         court = {r.uref: brd.footprint_courtyards[i]
                  for i, r in enumerate(records)}
     if len(brd.footprint_sheets) == len(records):
         sheet = {r.uref: brd.footprint_sheets[i]
                  for i, r in enumerate(records)}
+    if len(brd.footprint_sides) == len(records):
+        side = {r.uref: brd.footprint_sides[i]
+                for i, r in enumerate(records)}
     out = {}
     for key in ([r.uref for r in records] if refs is None else refs):
         rec = resolve_footprint(records, key)
@@ -964,7 +994,8 @@ def parts_from_board(board_path, refs=None):
                         pads=tuple(brd.pads[o:o + rec.n_pads]),
                         locked=rec.locked,
                         local_courtyard=court.get(rec.uref),
-                        sheet=sheet.get(rec.uref))
+                        sheet=sheet.get(rec.uref),
+                        side=side.get(rec.uref, "F"))
     return out
 
 

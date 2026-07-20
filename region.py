@@ -442,13 +442,16 @@ def preflight(parts, region, specs, obstacles=(), body_margin_mm=0.0):
     rx, ry, rw, rh = region
     out = []
 
-    area = 0.0
+    # Area is summed PER SIDE: front and back bodies share the fence footprint
+    # but not each other (§3), so the binding constraint is the busier side, not
+    # the sum. Summing would over-count a two-sided layout and refuse a solvable
+    # problem — the cardinal preflight sin (a verdict may be loose, never a false
+    # negative). A no-courtyard part is padded by body_margin_mm exactly as the
+    # model does, so the area/fit verdict matches what the search will enforce.
+    by_side = {"F": 0.0, "B": 0.0}
     for p in parts:
-        # the SAME keep-out the model enforces: a no-courtyard part is padded by
-        # body_margin_mm there, so an area/fit verdict computed without it would
-        # under-predict and let the search discover the failure the hard way.
         x0, y0, x1, y1 = part_courtyard(p, body_margin_mm=body_margin_mm)
-        area += (x1 - x0) * (y1 - y0)
+        by_side[getattr(p, "side", "F") or "F"] += (x1 - x0) * (y1 - y0)
         if (x1 - x0) > rw + 1e-9 or (y1 - y0) > rh + 1e-9:
             if (y1 - y0) > rw + 1e-9 or (x1 - x0) > rh + 1e-9:
                 out.append(
@@ -462,12 +465,15 @@ def preflight(parts, region, specs, obstacles=(), body_margin_mm=0.0):
     blocked = sum(max(0.0, min(o[2], rx + rw) - max(o[0], rx))
                   * max(0.0, min(o[3], ry + rh) - max(o[1], ry))
                   for o in obstacles)
+    binding = max(by_side, key=lambda s: by_side[s])
+    area = by_side[binding]
+    two_sided = by_side["F"] > 1e-9 and by_side["B"] > 1e-9
     if area > rw * rh + 1e-9:
         out.append(
-            f"the movable courtyards need {area:.1f} mm2 but the fence is "
-            f"only {rw * rh:.1f} mm2 (and up to {min(blocked, rw * rh):.1f} "
-            f"mm2 of that is under frozen obstacles) — grow the fence or take "
-            f"parts out of the component list")
+            f"the movable {binding + '-side ' if two_sided else ''}courtyards "
+            f"need {area:.1f} mm2 but the fence is only {rw * rh:.1f} mm2 (and "
+            f"up to {min(blocked, rw * rh):.1f} mm2 of that is under frozen "
+            f"obstacles) — grow the fence or take parts out of the component list")
 
     for c in specs:
         if c.kind != "adjacency_max_distance":
@@ -475,6 +481,10 @@ def preflight(parts, region, specs, obstacles=(), body_margin_mm=0.0):
         a, b = by_ref.get(c.ref_a), by_ref.get(c.ref_b)
         if a is None or b is None:
             continue
+        if (getattr(a, "side", "F") or "F") != (getattr(b, "side", "F") or "F"):
+            continue    # opposite sides can co-locate (courtyards may overlap),
+                        # so their centres reach distance 0 — any max is feasible;
+                        # the courtyard-overlap floor below does NOT apply (§3).
         ra, rb = _rel_courtyards(a, specs), _rel_courtyards(b, specs)
         best = _min_center_distance(ra, rb)
         if c.mm < best - 1e-9:
@@ -509,28 +519,37 @@ def _density_report(parts, region, obstacles=(), body_margin_mm=0.0):
     'impossible' while preflight lets the search run would be exactly the tool
     saying one thing and doing another). Obstacle area under the fence is
     reported alongside (free_utilization) but does NOT drive the verdict: the
-    preflight is deliberately loose so it can never be a false negative."""
+    preflight is deliberately loose so it can never be a false negative.
+
+    Two-sided (§3): front and back bodies share the fence footprint but not each
+    other, so the binding constraint is the BUSIER side, max(front, back) — NOT
+    the sum, which would over-count and refuse a solvable two-sided layout (the
+    cardinal preflight sin). courtyard_mm2 is that binding side; front_mm2/
+    back_mm2 break it down."""
     rx, ry, rw, rh = region
     fence = rw * rh
-    court = 0.0
+    by_side = {"F": 0.0, "B": 0.0}
     for p in parts:
         x0, y0, x1, y1 = part_courtyard(p, body_margin_mm=body_margin_mm)
-        court += (x1 - x0) * (y1 - y0)
+        by_side[getattr(p, "side", "F") or "F"] += (x1 - x0) * (y1 - y0)
+    court = max(by_side.values())          # the busier side is the binding one
     blocked = min(fence, sum(
         max(0.0, min(o[2], rx + rw) - max(o[0], rx))
         * max(0.0, min(o[3], ry + rh) - max(o[1], ry)) for o in obstacles))
     free = max(fence - blocked, 0.0)
     util = court / fence if fence > 0 else math.inf
-    # 'impossible' is EXACTLY preflight's hard area condition (court > fence, same
-    # body-margin courtyards) so the two can never disagree — a density verdict
-    # of impossible always coincides with zero candidates + an infeasible reason,
-    # never with a run that ships. 'tight' is the >=60% congestion warning.
+    # 'impossible' is EXACTLY preflight's hard area condition (busier side >
+    # fence, same body-margin courtyards) so the two can never disagree — a
+    # density verdict of impossible always coincides with zero candidates + an
+    # infeasible reason. 'tight' is the >=60% congestion warning.
     verdict = ("impossible" if court > fence + 1e-9
                else "tight" if util >= 0.60 else "ok")
     return {"courtyard_mm2": round(court, 1), "fence_mm2": round(fence, 1),
+            "front_mm2": round(by_side["F"], 1), "back_mm2": round(by_side["B"], 1),
             "blocked_mm2": round(blocked, 1), "free_mm2": round(free, 1),
             "utilization": round(util, 3),
             "free_utilization": round(court / free, 3) if free > 0 else None,
+            "two_sided": by_side["F"] > 1e-9 and by_side["B"] > 1e-9,
             "verdict": verdict}
 
 
@@ -1087,7 +1106,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     # 2 ── frozen furniture that intrudes into the fence
     fence_rect = (region[0], region[1],
                   region[0] + region[2], region[1] + region[3])
-    obstacles, obstacle_refs, frozen_pads = [], [], []
+    obstacles, obstacle_refs, obstacle_sides, frozen_pads = [], [], [], []
     for ref, part in sorted(all_parts.items()):
         if ref in movable:
             continue
@@ -1095,6 +1114,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         if _rects_overlap(rect, fence_rect):
             obstacles.append(rect)
             obstacle_refs.append(ref)
+            obstacle_sides.append(part.side)    # a back obstacle body cannot
+                                                # block a front movable body (§3)
             # frozen COPPER: a locked/out-of-fence part's pads still occupy
             # copper the movable group must clear (pad clearance, finding §2).
             # Only the intruding obstacle set feeds the search (fast); the
@@ -1175,13 +1196,32 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     # even when it succeeds and above 100% it cannot succeed as one fence.
     say((f"warn    " if density["verdict"] != "ok" else "density ")
         + f"{density['utilization']:.0%} courtyard density "
-        + f"({density['courtyard_mm2']:.0f} of {density['fence_mm2']:.0f} mm2 fence"
-        + (f", {density['blocked_mm2']:.0f} mm2 under obstacles"
-           if density["blocked_mm2"] > 0.5 else "") + ")"
+        + (f"(busier side: {density['courtyard_mm2']:.0f} of "
+           f"{density['fence_mm2']:.0f} mm2 fence; F {density['front_mm2']:.0f} / "
+           f"B {density['back_mm2']:.0f})" if density.get("two_sided")
+           else f"({density['courtyard_mm2']:.0f} of {density['fence_mm2']:.0f} "
+                f"mm2 fence" + (f", {density['blocked_mm2']:.0f} mm2 under "
+                                f"obstacles" if density["blocked_mm2"] > 0.5
+                                else "") + ")")
         + ("  — IMPOSSIBLE as one fence; grow it or split the group"
            if density["verdict"] == "impossible"
            else "  — tight, expect congestion and a slow / failing search"
            if density["verdict"] == "tight" else ""))
+
+    # two-sided honesty callout: this run models front/back bodies correctly in
+    # XY (a back body may share XY with a front body) and blocks through-hole pad
+    # copper on both layers, but it does NOT yet check COMPONENT HEIGHT against
+    # the enclosure's per-side z-clearance. A back part taller than the chassis
+    # gap is physically un-buildable and this run cannot see it — so it is named,
+    # not silently blessed (the tool must never say one thing and do another).
+    back_refs = sorted(p.ref for p in parts
+                       if (getattr(p, "side", "F") or "F") == "B")
+    if back_refs:
+        say(f"warn    {len(back_refs)} part(s) on the BACK: bodies are modelled "
+            f"in XY and their through-hole pads still block front copper, but "
+            f"COMPONENT HEIGHT vs the enclosure z-clearance is NOT verified this "
+            f"run — confirm they fit the back-side gap: "
+            f"{', '.join(back_refs[:12])}" + (" ..." if len(back_refs) > 12 else ""))
 
     # 4 ── placement search. Preflight first (proving it impossible costs
     # milliseconds, discovering it by search costs the user's attention),
@@ -1196,8 +1236,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"{m['ref']} -> {m['constraint']} ({m['distance_mm']} mm)"
             for m in seeded))
     model = None if impossible else PlacementModel(
-        parts, region, specs, obstacles=obstacles, keepouts=keepouts,
-        fixed_points=fixed_points, net_weights=net_weights,
+        parts, region, specs, obstacles=obstacles, obstacle_sides=obstacle_sides,
+        keepouts=keepouts, fixed_points=fixed_points, net_weights=net_weights,
         min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,
         pad_clearances=pad_clearances, default_pad_clearance_mm=default_pad_clr,
         frozen_pads=frozen_pads)
@@ -1239,6 +1279,14 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         "min_gap_mm": min_gap_mm,
         "body_margin_mm": body_margin_mm,
         "density": density,
+        "two_sided": {
+            "back_parts": back_refs,
+            "z_clearance_verified": False,
+            "note": ("bodies are modelled per side in XY (a back body may share "
+                     "XY with a front body) and through-hole pads block both "
+                     "copper layers, but COMPONENT HEIGHT vs the enclosure's "
+                     "per-side z-clearance is NOT checked yet — confirm back "
+                     "parts fit the chassis gap") if back_refs else None},
         "pad_clearance": {
             "enabled": bool(pad_clearance),
             "default_mm": round(default_pad_clr, 4) if pad_clearance else None,
@@ -1275,6 +1323,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         if impossible:
             raise RuntimeError("; ".join(impossible))
         pool = anneal_region(parts, region, specs, obstacles=obstacles,
+                             obstacle_sides=obstacle_sides,
                              keepouts=keepouts, fixed_points=fixed_points,
                              net_weights=net_weights, grid_mm=grid_mm,
                              min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,

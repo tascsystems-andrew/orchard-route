@@ -602,6 +602,44 @@ if __name__ == "__main__":
           "every annealed elite is pad-clean under the 1.0 mm HV clearance (the "
           "search path honours §2, not just the repair walk)")
 
+    print("=== two-sided bodies (§3): a back body may share XY, THT pads don't ===")
+
+    def sided(ref, x, y, net, side, layers, through=False, drill=0.0):
+        return Part(ref, x, y, 0.0,
+                    (Pad(x, y, list(layers), 1, net, 2.0, 2.0, through, drill,
+                         0.0),), side=side)
+
+    REG2 = (0.0, 0.0, 30.0, 20.0)
+    fa = sided("A", 10.0, 10.0, "na", "F", ["F.Cu"])
+    fb = sided("B", 10.0, 10.0, "nb", "F", ["F.Cu"])
+    check(not PlacementModel([fa, fb], REG2).judge(
+              [(10, 10, 0), (10, 10, 0)])[0],
+          "two FRONT bodies on one spot collide (same-side courtyard overlap)")
+    bb = sided("B", 10.0, 10.0, "nb", "B", ["B.Cu"])
+    check(PlacementModel([fa, bb], REG2).judge([(10, 10, 0), (10, 10, 0)])[0],
+          "a FRONT and a BACK body may share the SAME XY (opposite sides, no body "
+          "collision) — the 'free the front' move §3 enables")
+    bt = sided("B", 10.0, 10.0, "nb", "B", ["F.Cu", "B.Cu"], through=True,
+               drill=1.0)
+    check(not PlacementModel([fa, bt], REG2,
+                             pad_clearances={"na": 0.2, "nb": 0.2},
+                             default_pad_clearance_mm=0.2).judge(
+              [(10, 10, 0), (10, 10, 0)])[0],
+          "a BACK through-hole part still blocks FRONT pad copper (pads are *.Cu, "
+          "one drill through both sides) — it shorts a front SMD pad (§3 core)")
+    mob_b = PlacementModel([fa], REG2, obstacles=[(9.0, 9.0, 11.0, 11.0)],
+                           obstacle_sides=["B"])
+    check(mob_b.judge([(10, 10, 0)])[0],
+          "a BACK-side frozen obstacle does not collide with a FRONT movable body")
+    mob_f = PlacementModel([fa], REG2, obstacles=[(9.0, 9.0, 11.0, 11.0)],
+                           obstacle_sides=["F"])
+    check(not mob_f.judge([(10, 10, 0)])[0],
+          "a FRONT-side obstacle DOES collide with a front body (side gate real)")
+    mob_none = PlacementModel([bb], REG2, obstacles=[(9.0, 9.0, 11.0, 11.0)])
+    check(not mob_none.judge([(10, 10, 0)])[0],
+          "an obstacle with unspecified side collides with either side (old "
+          "callers unchanged)")
+
     print("=== net weights via writeback's class loader ===")
     w = net_weights_from_project(AMP, ["GND", "B+250"])
     check(w == {"GND": 1.0, "B+250": 1.0},
