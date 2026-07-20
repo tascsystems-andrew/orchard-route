@@ -1255,6 +1255,107 @@ def test_two_sided():
           "front+back would have (the cardinal false-negative, avoided)")
 
 
+def test_z_clearance():
+    """§3 z-clearance enforcement (Land C): component height vs the enclosure's
+    per-side gap. A back part TALLER than the back clearance is refused (state-
+    independent, folded into preflight -> zero candidates + a fix); an UNKNOWN
+    height on a limited side is FLAGGED, never silently blocked or passed. The
+    per-side gap is read from the board-info box, overridable by --z-back."""
+    print("=== z-clearance enforcement (finding §3, Land C) ===")
+    src = os.path.join(SYN_DIR, "zclear", "z.kicad_pcb")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    # C1: back electrolytic stating height=16mm; U1: back part of unknown height;
+    # R1: front 0603. Board-info box: front 30 mm, back 3 mm.
+    with open(src, "w") as f:
+        f.write(
+            '(kicad_pcb (version 20240108) (generator "t")\n'
+            '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user) '
+            '(45 "F.CrtYd" user) (46 "B.CrtYd" user))\n\t(net 0 "")\n'
+            '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") (width 0.1))\n'
+            '\t(gr_text "max component height front: 30mm\\n'
+            'max component height back: 3mm\\nlayout: left to right" '
+            '(at 20 38) (layer "Cmts.User"))\n'
+            '\t(footprint "Capacitor_THT:CP_Radial_D10.0mm_P5.00mm" (layer "B.Cu") '
+            '(at 8 8)\n\t\t(descr "CP, Radial, diameter=10mm, height=16mm, Elec")\n'
+            '\t\t(property "Reference" "C1" (at 0 0 0) (layer "B.SilkS"))\n'
+            '\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            '(layer "B.CrtYd") (width 0.05))\n'
+            '\t\t(pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8) '
+            '(layers "*.Cu") (net 0 "")))\n'
+            '\t(footprint "weird:MysteryModule" (layer "B.Cu") (at 20 8)\n'
+            '\t\t(property "Reference" "U1" (at 0 0 0) (layer "B.SilkS"))\n'
+            '\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            '(layer "B.CrtYd") (width 0.05))\n'
+            '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "B.Cu") (net 0 "")))\n'
+            '\t(footprint "Resistor_SMD:R_0603_1608Metric" (layer "F.Cu") (at 32 8)\n'
+            '\t\t(property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            '(layer "F.CrtYd") (width 0.05))\n'
+            '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n)\n')
+
+    refs = ["C1", "U1", "R1"]
+    fence = (0.0, 0.0, 40.0, 40.0)
+    # box: back 3 mm -> the 16 mm cap is too tall.
+    r = optimize_region(src, refs, fence, k=1, sweeps=10, seed=0,
+                        out_dir=os.path.join(OUT_DIR, "z-tall"))
+    ts = r.diagnostics["two_sided"]
+    check([t["ref"] for t in ts["too_tall"]] == ["C1"] and not r.candidates,
+          "a 16 mm back cap under a 3 mm back clearance -> too tall, zero "
+          "candidates (state-independent infeasibility, folded into preflight)")
+    check("C1 is 16 mm" in (r.diagnostics.get("infeasible_reason") or "")
+          and "back side has only 3 mm" in (r.diagnostics.get("infeasible_reason") or ""),
+          f"infeasible_reason names the part, its height, the gap, and the fix "
+          f"({(r.diagnostics.get('infeasible_reason') or '')[:70]}...)")
+    check(any(v["ref"] == "U1" for v in ts["unverified"]),
+          "the UNKNOWN-height back part U1 is FLAGGED unverified — neither "
+          "silently blocked nor silently passed")
+    check(ts["z_clearance_source"] == "board-info box"
+          and ts["z_clearance_mm"]["B"] == 3.0
+          and ts["layout_direction"] == "left to right",
+          f"z-clearance and layout came from the board-info box ({ts['z_clearance_mm']})")
+
+    # --z-back 20 overrides the box: now the 16 mm cap fits, run proceeds.
+    r2 = optimize_region(src, refs, fence, k=1, sweeps=15, seed=0, z_back_mm=20.0,
+                         out_dir=os.path.join(OUT_DIR, "z-ok"))
+    ts2 = r2.diagnostics["two_sided"]
+    check(not ts2["too_tall"] and "C1" in ts2["fits"]
+          and ts2["z_clearance_source"] == "call params",
+          "--z-back 20 (overriding the box) lets the 16 mm cap fit and is "
+          "reported as the source")
+    check(bool(r2.candidates) and any(v["ref"] == "U1" for v in ts2["unverified"]),
+          "the run still PLACES — an unknown-height part is flagged, never blocks "
+          "the search (a flag is not a false negative)")
+
+    # PARTIAL LIMIT (adversarial review): a FRONT-only limit must NOT bless the
+    # unchecked BACK parts. Uses a NO-BOX board so --z-front is the only limit;
+    # the back parts are on an unlimited side -> unchecked -> NOT verified.
+    nobox = os.path.join(SYN_DIR, "zclear", "nobox.kicad_pcb")
+    with open(nobox, "w") as f:
+        f.write(
+            '(kicad_pcb (version 20240108) (generator "t")\n'
+            '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user) '
+            '(45 "F.CrtYd" user) (46 "B.CrtYd" user))\n\t(net 0 "")\n'
+            '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") (width 0.1))\n'
+            '\t(footprint "weird:MysteryModule" (layer "B.Cu") (at 10 10)\n'
+            '\t\t(property "Reference" "U1" (at 0 0 0) (layer "B.SilkS"))\n'
+            '\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            '(layer "B.CrtYd") (width 0.05))\n'
+            '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "B.Cu") (net 0 "")))\n'
+            '\t(footprint "Resistor_SMD:R_0603_1608Metric" (layer "F.Cu") (at 30 10)\n'
+            '\t\t(property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))\n'
+            '\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            '(layer "F.CrtYd") (width 0.05))\n'
+            '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n)\n')
+    r3 = optimize_region(nobox, ["U1", "R1"], fence, k=1, sweeps=10, seed=0,
+                         z_front_mm=30.0, out_dir=os.path.join(OUT_DIR, "z-partial"))
+    ts3 = r3.diagnostics["two_sided"]
+    back_unchecked = {v["ref"] for v in ts3.get("unchecked", []) if v["side"] == "B"}
+    check(ts3["z_clearance_verified"] is False
+          and "U1" in back_unchecked and not ts3["too_tall"],
+          "a FRONT-only z limit does NOT verify the BACK — the back part is named "
+          "'unchecked' and z_clearance_verified stays False (no silent blessing)")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -1367,6 +1468,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("hole_keepouts", test_hole_keepouts),
          ("pad_clearance", test_pad_clearance),
          ("two_sided", test_two_sided),
+         ("z_clearance", test_z_clearance),
          ("density", test_density_preflight),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),

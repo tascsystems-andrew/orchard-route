@@ -74,7 +74,9 @@ import shutil
 import time
 from dataclasses import dataclass, field, asdict, replace
 
+import heights as _heights
 from board import Board, load_board
+from boardinfo import read_board_info
 from constraints import evaluate_constraints, parse_constraints
 from lattice import (clearance_map, default_copper_rules, lattice_for_board,
                      pad_overlap_allowances)
@@ -574,6 +576,53 @@ def _density_expansion(region, court_mm2, target=0.75):
                       f"clearances may need more)"}
 
 
+def _z_clearance_report(parts, z_clear, overrides):
+    """Component height vs the enclosure's per-side clearance (finding §3, the
+    two-sided precondition). For each part on a side that HAS a stated clearance,
+    resolve its height (heights.resolve: override > footprint > family upper
+    bound > unknown) and sort it:
+
+    - too_tall: a MEASURED height (footprint/override) above the clearance — a
+      hard, state-independent infeasibility (it fits nowhere on that side), so it
+      is folded into the preflight reasons and the run returns zero candidates;
+    - unverified: an UNKNOWN height, or a family UPPER BOUND that exceeds the
+      clearance (the real part may be shorter and fit — a conservative bound must
+      never HARD-refuse, that would be a false negative). Flagged for the human;
+    - fits: provably clears (measured within, or even the upper bound clears);
+    - unchecked: on a side with NO stated clearance — its height fit is UNKNOWN.
+      A part here is NOT verified, so a run that says 'verified' while any part is
+      unchecked would be lying (adversarial review 2026-07-20): setting only ONE
+      side's limit must not verbally bless the other side's parts.
+
+    The caller folds too_tall into preflight (zero candidates), flags unverified
+    AND unchecked, and only reports z_clearance_verified when every part sat on a
+    limited side and passed."""
+    too_tall, unverified, unchecked, fits, per_part = [], [], [], [], {}
+    measured_src = ("footprint", "override:ref", "override:fpid")
+    for p in parts:
+        side = getattr(p, "side", "F") or "F"
+        limit = z_clear.get(side)
+        h, src = _heights.resolve(getattr(p, "ref", None), getattr(p, "fpid", None),
+                                  getattr(p, "height_mm", None), overrides)
+        per_part[p.ref] = {"side": side, "height_mm": h, "source": src,
+                           "limit_mm": limit}
+        if limit is None:
+            unchecked.append({"ref": p.ref, "side": side})
+        elif h is None:
+            unverified.append({"ref": p.ref, "side": side,
+                               "why": "height unknown"})
+        elif h > limit + 1e-6 and src in measured_src:
+            too_tall.append({"ref": p.ref, "side": side,
+                             "height_mm": h, "limit_mm": limit})
+        elif h > limit + 1e-6:
+            unverified.append({"ref": p.ref, "side": side,
+                               "why": f"family upper bound {h:g} mm exceeds the "
+                                      f"{limit:g} mm limit — measure or override"})
+        else:
+            fits.append(p.ref)
+    return too_tall, unverified, unchecked, fits, per_part
+
+
 # ── seeding ──────────────────────────────────────────────────────────────────
 
 def _translate(part, nx, ny):
@@ -992,7 +1041,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                     class_weights=None, keep_work=False, progress=None,
                     route_kwargs=None, area=None, auto_fix_locked=True,
                     respect_positions=False, hole_clearance_mm=3.0,
-                    min_gap_mm=0.25, body_margin_mm=1.0, pad_clearance=True):
+                    min_gap_mm=0.25, body_margin_mm=1.0, pad_clearance=True,
+                    z_front_mm=None, z_back_mm=None, height_overrides=None):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
@@ -1208,26 +1258,68 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
            else "  — tight, expect congestion and a slow / failing search"
            if density["verdict"] == "tight" else ""))
 
-    # two-sided honesty callout: this run models front/back bodies correctly in
-    # XY (a back body may share XY with a front body) and blocks through-hole pad
-    # copper on both layers, but it does NOT yet check COMPONENT HEIGHT against
-    # the enclosure's per-side z-clearance. A back part taller than the chassis
-    # gap is physically un-buildable and this run cannot see it — so it is named,
-    # not silently blessed (the tool must never say one thing and do another).
+    # component height vs the enclosure's per-side z-clearance (finding §3, the
+    # two-sided precondition). The available height per side comes from the
+    # board's own info box (boardinfo — the "box beside each board" the human
+    # fills), with the call params overriding it; heights resolve through the C1
+    # sourcing layer. A back part TALLER than the back-side gap is physically
+    # un-buildable — the model places bodies correctly in XY, but a chassis foul
+    # is invisible to copper, so it is named here, never silently blessed.
+    binfo = read_board_info(board_path)
+    z_clear = {"F": z_front_mm if z_front_mm is not None else binfo["z_front_mm"],
+               "B": z_back_mm if z_back_mm is not None else binfo["z_back_mm"]}
+    z_active = any(v is not None for v in z_clear.values())
+    z_source = ("call params" if (z_front_mm is not None or z_back_mm is not None)
+                else "board-info box" if binfo["found"] else None)
     back_refs = sorted(p.ref for p in parts
                        if (getattr(p, "side", "F") or "F") == "B")
-    if back_refs:
-        say(f"warn    {len(back_refs)} part(s) on the BACK: bodies are modelled "
-            f"in XY and their through-hole pads still block front copper, but "
-            f"COMPONENT HEIGHT vs the enclosure z-clearance is NOT verified this "
-            f"run — confirm they fit the back-side gap: "
-            f"{', '.join(back_refs[:12])}" + (" ..." if len(back_refs) > 12 else ""))
+    z_too_tall, z_unverified, z_unchecked, z_fits, z_per_part = (
+        _z_clearance_report(parts, z_clear, dict(height_overrides or {}))
+        if z_active else ([], [], [], [], {}))
+    # a part on a side with NO limit is UNCHECKED; verified is true only when
+    # EVERY part sat on a limited side and cleared (no too_tall, no unverified,
+    # no unchecked) — setting one side's limit must never bless the other's.
+    z_verified = bool(z_active and not z_too_tall and not z_unverified
+                      and not z_unchecked)
+    back_unchecked = [v["ref"] for v in z_unchecked if v["side"] == "B"]
+    if z_active:
+        say(f"z-clear  front {z_clear['F'] if z_clear['F'] is not None else '—'} "
+            f"/ back {z_clear['B'] if z_clear['B'] is not None else '—'} mm "
+            f"({z_source}) | {len(z_fits)} fit, {len(z_too_tall)} too tall, "
+            f"{len(z_unverified)} unverified, {len(z_unchecked)} unchecked")
+    if z_too_tall:
+        say(f"warn    {len(z_too_tall)} part(s) exceed their side's enclosure "
+            f"clearance and cannot be placed there: "
+            + "; ".join(f"{v['ref']} {v['height_mm']:g}>{v['limit_mm']:g}mm "
+                        f"({'back' if v['side'] == 'B' else 'front'})"
+                        for v in z_too_tall[:8]))
+    if z_unverified:
+        say(f"warn    {len(z_unverified)} part(s) on a height-limited side have "
+            f"UNVERIFIED height — measure or add a --height override: "
+            + ", ".join(v["ref"] for v in z_unverified[:12]))
+    # the BACK is the tight side: if it carries parts but has NO limit, warn
+    # whether or not the FRONT was limited (the review's exact bug — a front
+    # limit must not suppress the back-unverified signal).
+    if back_unchecked:
+        say(f"warn    {len(back_unchecked)} part(s) on the BACK but NO back "
+            f"z-clearance set (board-info box or --z-back) — their height vs the "
+            f"chassis is UNVERIFIED: {', '.join(back_unchecked[:12])}"
+            + (" ..." if len(back_unchecked) > 12 else ""))
 
     # 4 ── placement search. Preflight first (proving it impossible costs
     # milliseconds, discovering it by search costs the user's attention),
     # then a constraint-aware seed, then the anneal.
     impossible = preflight(parts, region, specs, obstacles,
                            body_margin_mm=body_margin_mm)
+    # a part taller than its side's enclosure clearance fits NOWHERE on that side
+    # (state-independent, like a part too big for the fence) — so it is a
+    # preflight infeasibility, not a search failure. Only MEASURED over-height
+    # hard-blocks; an unknown or an upper-bound-over-limit is flagged, not refused.
+    impossible = impossible + [
+        f"{v['ref']} is {v['height_mm']:g} mm tall but the "
+        f"{'back' if v['side'] == 'B' else 'front'} side has only "
+        f"{v['limit_mm']:g} mm of enclosure clearance — move it to the other "
+        f"side or use a shorter part" for v in z_too_tall]
     parts, seeded = ([], []) if impossible else \
         seed_placement(parts, region, specs, obstacles, grid_mm,
                        respect_positions=respect_positions)
@@ -1281,12 +1373,27 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         "density": density,
         "two_sided": {
             "back_parts": back_refs,
-            "z_clearance_verified": False,
-            "note": ("bodies are modelled per side in XY (a back body may share "
-                     "XY with a front body) and through-hole pads block both "
-                     "copper layers, but COMPONENT HEIGHT vs the enclosure's "
-                     "per-side z-clearance is NOT checked yet — confirm back "
-                     "parts fit the chassis gap") if back_refs else None},
+            "z_clearance_mm": {"F": z_clear["F"], "B": z_clear["B"]},
+            "z_clearance_source": z_source,
+            "z_clearance_verified": z_verified,
+            "layout_direction": binfo["layout_direction"],
+            "too_tall": z_too_tall,
+            "unverified": z_unverified,
+            "unchecked": z_unchecked,
+            "fits": z_fits,
+            "heights": z_per_part,
+            "note": (
+                ("component height checked against the enclosure z-clearance"
+                 + (f"; {len(z_too_tall)} too tall (see infeasible_reason)"
+                    if z_too_tall else "")
+                 + (f"; {len(z_unverified)} unverified — measure or override"
+                    if z_unverified else "")
+                 + (f"; {len(z_unchecked)} on side(s) with NO stated clearance — "
+                    f"NOT checked" if z_unchecked else "")
+                 + (" — all clear" if z_verified else "")) if z_active
+                else "back-side parts present but NO per-side z-clearance given "
+                     "(board-info box or --z-back) — height fit is UNVERIFIED"
+                if back_refs else None)},
         "pad_clearance": {
             "enabled": bool(pad_clearance),
             "default_mm": round(default_pad_clr, 4) if pad_clearance else None,
@@ -1776,6 +1883,28 @@ def _print_summary(result, out_dir):
               f"({dn['courtyard_mm2']:.0f} of {dn['fence_mm2']:.0f} mm2"
               + (f", {dn['blocked_mm2']:.0f} under obstacles"
                  if dn['blocked_mm2'] > 0.5 else "") + ")" + flag)
+    ts = d.get("two_sided") or {}
+    zc = ts.get("z_clearance_mm") or {}
+    if ts.get("back_parts") or zc.get("F") is not None or zc.get("B") is not None:
+        zf = zc.get("F"); zb = zc.get("B")
+        print(f"z-clearance : front {zf if zf is not None else '—'} / back "
+              f"{zb if zb is not None else '—'} mm"
+              + (f" (from {ts['z_clearance_source']})"
+                 if ts.get("z_clearance_source") else "")
+              + f" | {len(ts.get('back_parts', []))} back-side part(s)")
+        if ts.get("too_tall"):
+            for v in ts["too_tall"][:6]:
+                print(f"      TOO TALL  {v['ref']} {v['height_mm']:g} mm > "
+                      f"{v['limit_mm']:g} mm ({'back' if v['side'] == 'B' else 'front'})")
+        if ts.get("unverified"):
+            print(f"      unverified: "
+                  + ", ".join(v["ref"] for v in ts["unverified"][:12]))
+        back_unchecked = [v["ref"] for v in ts.get("unchecked", [])
+                          if v["side"] == "B"]
+        if back_unchecked:
+            print(f"      NOTE      {len(back_unchecked)} back-side part(s) with "
+                  f"NO back z-clearance — height fit UNVERIFIED (set the board-"
+                  f"info box or --z-back)")
     print()
     if not result.candidates:
         print("candidates  : NONE")
@@ -2063,6 +2192,14 @@ def main(argv=None):
                     "per net class): courtyard non-overlap does not imply it, so "
                     "a fat pad or an HV creepage rule shorts with clear bodies. "
                     "Off is A/B measurement only — it ships copper DRC will fail")
+    ap.add_argument("--z-front", type=float, default=None, metavar="MM",
+                    help="available component height on the FRONT before the "
+                    "enclosure (finding §3). A front part taller than this is "
+                    "refused. Overrides the board-info box; omit to use the box")
+    ap.add_argument("--z-back", type=float, default=None, metavar="MM",
+                    help="available component height on the BACK before the "
+                    "chassis — the tight one on a two-sided board. A back part "
+                    "taller than this is refused. Overrides the board-info box")
     ap.add_argument("--via-weight", type=float, default=VIA_WEIGHT_MM,
                     help="mm of track a via is worth when ranking")
     ap.add_argument("--keep-work", action="store_true",
@@ -2118,6 +2255,9 @@ def main(argv=None):
             hole_clearance_mm=args.hole_clearance, min_gap_mm=args.min_gap,
             body_margin_mm=args.body_margin,
             pad_clearance=not args.no_pad_clearance,
+            z_front_mm=args.z_front, z_back_mm=args.z_back,
+            height_overrides=(_heights.load_overrides(args.heights)
+                              if args.heights else None),
             progress=None if args.json else (lambda m: print(m, flush=True)))
     except ValueError as e:
         ap.error(str(e))

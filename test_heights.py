@@ -71,6 +71,10 @@ if __name__ == "__main__":
           "'height: 3 mm' and 'height 12mm' both parse")
     check(B._parse_height_text("no dimensions here") is None,
           "text with no height yields None")
+    check(B._parse_height_text("xheight=5mm") is None
+          and B._parse_height_text("overall height=7mm") == 7.0,
+          "a value glued after a word ending in 'height' is NOT read (word "
+          "boundary), but 'overall height=7mm' still parses (adversarial review)")
 
     d = tempfile.mkdtemp()
     try:
