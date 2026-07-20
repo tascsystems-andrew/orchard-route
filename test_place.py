@@ -459,6 +459,149 @@ if __name__ == "__main__":
         [(15.0, 10.0, 0.0)])[0]
     check(not fk, "judge() rejects a courtyard sitting on a keep-out")
 
+    print("=== pad-copper clearance (finding §2) ===")
+    from place import (pad_world_corners, pad_clearance_report,
+                       _pad_local_corners, _rot as _prot)
+
+    def padpart(ref, x, y, na, nb, rot=0.0, layers=("F.Cu",)):
+        pads = (Pad(x - 1.0, y, list(layers), 0, na, 1.0, 1.0, False, 0.0, rot),
+                Pad(x + 1.0, y, list(layers), 0, nb, 1.0, 1.0, False, 0.0, rot))
+        return Part(ref, x, y, rot, pads)
+
+    REGP = (0.0, 0.0, 40.0, 20.0)
+    # A right pad copper edge at x=6.5 (courtyard right 6.75); B left pad copper
+    # edge at 7.05 (courtyard left 6.80): the courtyards clear by 0.05 mm, but the
+    # pad copper gap is only 0.55 mm — the exact case courtyard non-overlap misses.
+    Apc = padpart("A", 5.0, 5.0, "n1", "SIG")
+    Bpc = padpart("B", 8.55, 5.0, "HV", "n4")
+
+    def feas(clr, default=0.2, parts=(Apc, Bpc)):
+        m = PlacementModel(list(parts), REGP, pad_clearances=clr,
+                           default_pad_clearance_mm=default)
+        return m.judge(m.initial_states())[0]
+
+    check(feas({"SIG": 0.2, "HV": 0.2, "n1": 0.2, "n4": 0.2}),
+          "0.55 mm pad gap is feasible at 0.2 mm clearance (courtyards clear too)")
+    check(not feas({"SIG": 0.2, "HV": 1.0, "n1": 0.2, "n4": 0.2}),
+          "the SAME 0.55 mm pad gap is REJECTED when the HV net asks 1.0 mm — "
+          "courtyard non-overlap did not imply pad-copper clearance")
+    Asm = padpart("A", 5.0, 5.0, "n1", "SHARED")
+    Bsm = padpart("B", 8.55, 5.0, "SHARED", "n4")
+    check(feas({"SHARED": 1.0, "n1": 0.2, "n4": 0.2}, parts=(Asm, Bsm)),
+          "same-net pads across the boundary may TOUCH (SHARED at 1.0 mm still "
+          "feasible — DRC does not space a net from itself)")
+    Bbk = padpart("B", 8.55, 5.0, "HV", "n4", layers=("B.Cu",))
+    check(feas({"HV": 1.0, "SIG": 0.2, "n1": 0.2, "n4": 0.2}, parts=(Apc, Bbk)),
+          "an HV pad on B.Cu does NOT clear against a SIG pad on F.Cu (no shared "
+          "copper layer — the check is layer-aware)")
+    mnone = PlacementModel([Apc, Bpc], REGP)
+    check(mnone.judge(mnone.initial_states())[0],
+          "pad_clearances=None disables the check entirely (old callers, and the "
+          "synthetic anneal tests above, are unaffected)")
+    mbad = PlacementModel([Apc, Bpc], REGP,
+                          pad_clearances={"SIG": 0.2, "HV": 1.0, "n1": 0.2,
+                                          "n4": 0.2}, default_pad_clearance_mm=0.2)
+    probs = [p for p in mbad.problems(mbad.initial_states())
+             if "copper clearance" in p]
+    check(len(probs) == 1 and "0.550 mm" in probs[0] and "1 mm" in probs[0]
+          and "SIG" in probs[0] and "HV" in probs[0],
+          f"problems() explains the short exactly — parts, nets, gap, need "
+          f"({probs})")
+
+    # ROTATION round-trip — the invariant #35 depends on: a pad's LOCAL corners,
+    # mapped to world at the part's OWN placement, reproduce its absolute rect;
+    # at rot+90 they equal the home rect rigidly TURNED about the part origin, so
+    # the pad copper follows the footprint through rotation (no shape shear).
+    Prot = padpart("P", 10.0, 10.0, "a", "b", rot=0.0)
+    loc = _pad_local_corners(Prot, Prot.pads[1])
+    home = pad_world_corners(Prot.pads[1])
+    back = [(10.0 + _prot(cx, cy, 0.0)[0], 10.0 + _prot(cx, cy, 0.0)[1])
+            for cx, cy in loc]
+    check(max(math.hypot(b[0] - h[0], b[1] - h[1])
+              for b, h in zip(back, home)) < 1e-9,
+          "a pad's local corners map back to its absolute rect at home placement")
+    turned = [(10.0 + _prot(cx, cy, 90.0)[0], 10.0 + _prot(cx, cy, 90.0)[1])
+              for cx, cy in loc]
+    exp = [(10.0 + _prot(h[0] - 10.0, h[1] - 10.0, 90.0)[0],
+            10.0 + _prot(h[0] - 10.0, h[1] - 10.0, 90.0)[1]) for h in home]
+    check(max(math.hypot(t[0] - e[0], t[1] - e[1])
+              for t, e in zip(turned, exp)) < 1e-9,
+          "the pad rect rotates RIGIDLY with the part (pad copper follows the "
+          "footprint through rotation — the invariant #35 proves end-to-end)")
+
+    # WHOLE-BOARD verify (finding §5): the same short, found by pad_clearance_report
+    # over a flat pad list (the write-time post-condition). Same-net / same-
+    # footprint pairs never count.
+    padsA = [("A", p.net_name, frozenset(p.layers), pad_world_corners(p))
+             for p in Apc.pads]
+    padsB = [("B", p.net_name, frozenset(p.layers), pad_world_corners(p))
+             for p in Bpc.pads]
+    rep = pad_clearance_report(padsA + padsB,
+                               {"SIG": 0.2, "HV": 1.0, "n1": 0.2, "n4": 0.2}, 0.2)
+    check(len(rep) == 1 and rep[0][0] == "A" and rep[0][2] == "B"
+          and abs(rep[0][4] - 0.55) < 1e-6 and rep[0][5] == 1.0,
+          f"pad_clearance_report finds the A/B HV short over a whole-board pad "
+          f"list ({rep})")
+    check(pad_clearance_report(padsA + padsB,
+                               {"SIG": 0.2, "HV": 0.2, "n1": 0.2, "n4": 0.2},
+                               0.2) == [],
+          "no violation reported when the resolved clearance is satisfied")
+    check(pad_clearance_report(padsA, {"n1": 5.0, "SIG": 5.0}, 0.2) == [],
+          "two pads of the SAME footprint never count as a short (5 mm clearance, "
+          "1 mm gap, still clean)")
+
+    # NPTH / no-annulus holes carry NO copper — a mounting hole must NOT be
+    # modelled as solid copper and 'short' a neighbour (adversarial review
+    # 2026-07-20). board.py gives np_thru_hole pads all copper layers so the
+    # router treats the drill as an obstacle; the clearance model must not.
+    from place import _pad_has_copper
+    check(not _pad_has_copper(
+              Pad(0, 0, ["F.Cu"], 0, "", 3.2, 3.2, True, 3.2, 0.0, plated=False))
+          and not _pad_has_copper(          # plated hole, pad == drill: no annulus
+              Pad(0, 0, ["F.Cu"], 0, "A", 1.6, 1.6, True, 1.6, 0.0, plated=True))
+          and _pad_has_copper(              # plated hole WITH annular ring
+              Pad(0, 0, ["F.Cu"], 0, "A", 1.6, 1.6, True, 0.8, 0.0, plated=True))
+          and _pad_has_copper(Pad(0, 0, ["F.Cu"], 0, "A", 1.0, 1.0, False, 0.0)),
+          "_pad_has_copper: np_thru_hole and no-annulus holes carry no copper; "
+          "annular THT and SMD do")
+
+    def hole_part(ref, x, y, drill, plated):
+        return Part(ref, x, y, 0.0, (Pad(x, y, ["F.Cu", "B.Cu"], 0, "",
+                                         3.2, 3.2, True, drill, 0.0,
+                                         plated=plated),))
+    Rsmd = Part("R1", 7.35, 5.0, 0.0,
+                (Pad(7.35, 5.0, ["F.Cu"], 1, "SIG", 1.0, 1.0, False, 0.0, 0.0),))
+    REGN = (0.0, 0.0, 20.0, 15.0)
+    clrN = {"SIG": 0.8, "": 0.8}
+    # courtyards clear by 0.05 mm; the hole's copper edge sits 0.55 mm from the
+    # SMD pad — a short at 0.8 mm clearance IF the hole were copper.
+    mN = PlacementModel([hole_part("H1", 10.0, 5.0, 3.2, False), Rsmd], REGN,
+                        pad_clearances=clrN, default_pad_clearance_mm=0.8)
+    check(mN.judge(mN.initial_states())[0],
+          "an np_thru_hole mounting hole is NOT copper — no false short against a "
+          "0.55 mm-away SMD pad even at 0.8 mm clearance (refusing this would "
+          "reject a buildable board)")
+    mP = PlacementModel([hole_part("H1", 10.0, 5.0, 1.5, True), Rsmd], REGN,
+                        pad_clearances=clrN, default_pad_clearance_mm=0.8)
+    check(not mP.judge(mP.initial_states())[0],
+          "the same-sized PLATED pad WITH an annular ring (drill 1.5 < 3.2 pad) "
+          "DOES short — the exclusion is about missing copper, not position")
+
+    # SEARCH PATH: every elite an anneal ships under a tight HV clearance is
+    # pad-clean when re-judged — a regression that drops the pad check from
+    # judge() fails here, not just in problems().
+    res_pc = anneal_region([Apc, Bpc], REGP,
+                           pad_clearances={"SIG": 0.2, "HV": 1.0, "n1": 0.2,
+                                           "n4": 0.2},
+                           default_pad_clearance_mm=0.2, seed=0, sweeps=60)
+    mchk = PlacementModel([Apc, Bpc], REGP,
+                          pad_clearances={"SIG": 0.2, "HV": 1.0, "n1": 0.2,
+                                          "n4": 0.2}, default_pad_clearance_mm=0.2)
+    check(bool(res_pc.elites) and all(mchk.evaluate(el.placements)[0]
+                                      for el in res_pc.elites),
+          "every annealed elite is pad-clean under the 1.0 mm HV clearance (the "
+          "search path honours §2, not just the repair walk)")
+
     print("=== net weights via writeback's class loader ===")
     w = net_weights_from_project(AMP, ["GND", "B+250"])
     check(w == {"GND": 1.0, "B+250": 1.0},
