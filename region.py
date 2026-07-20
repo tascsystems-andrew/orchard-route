@@ -910,7 +910,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                     class_weights=None, keep_work=False, progress=None,
                     route_kwargs=None, area=None, auto_fix_locked=True,
                     respect_positions=False, hole_clearance_mm=3.0,
-                    min_gap_mm=0.25):
+                    min_gap_mm=0.25, body_margin_mm=1.0):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
@@ -999,6 +999,13 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"addressed as ref#N (see writeback.board_footprints)")
     movable = set(components)
     parts = [all_parts[r] for r in components]
+    # footprints with no F.CrtYd: placed on a pad-bbox + body-margin estimate,
+    # warned by name below (finding C). Computed once, used by the say line, the
+    # geometry_warnings entry, and the courtyard_source diagnostic.
+    no_crtyd = sorted(r for r in components
+                      if all_parts[r].local_courtyard is None)
+    n_real_court = len(components) - len(no_crtyd)
+    n_proxy_court = len(no_crtyd)
 
     # constraints are parsed here too so a typo fails before any search; the
     # auto-fix fixed(ref) constraints are appended (deduped) to the caller's.
@@ -1012,7 +1019,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     for ref, part in sorted(all_parts.items()):
         if ref in movable:
             continue
-        rect = part_courtyard(part)
+        rect = part_courtyard(part, body_margin_mm=body_margin_mm)
         if _rects_overlap(rect, fence_rect):
             obstacles.append(rect)
             obstacle_refs.append(ref)
@@ -1051,6 +1058,12 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"{', '.join(unplaced[:12])}"
             + (" ..." if len(unplaced) > 12 else "")
             + " — name them in components to place them in an area")
+    if no_crtyd:
+        say(f"warn    {len(no_crtyd)} footprint(s) draw NO courtyard — keep-out "
+            f"is a pad-bbox + {body_margin_mm:g} mm body estimate, not a real "
+            f"courtyard (a body overhanging its pads is under-modelled): "
+            f"{', '.join(no_crtyd[:12])}"
+            + (" ..." if len(no_crtyd) > 12 else ""))
 
     # 4 ── placement search. Preflight first (proving it impossible costs
     # milliseconds, discovering it by search costs the user's attention),
@@ -1066,13 +1079,21 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     model = None if impossible else PlacementModel(
         parts, region, specs, obstacles=obstacles, keepouts=keepouts,
         fixed_points=fixed_points, net_weights=net_weights,
-        min_gap_mm=min_gap_mm)
+        min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm)
     # how many placed footprints the collision model models from their REAL
     # F.CrtYd vs the pad-bbox proxy — so the note below tells the driver the
     # truth about this run's model instead of a stale blanket "proxy" claim.
-    n_real_court = sum(1 for r in components
-                       if all_parts[r].local_courtyard is not None)
-    n_proxy_court = len(components) - n_real_court
+    # WARN by name (finding C): a footprint with no F.CrtYd is placed on a
+    # pad-bbox estimate of its body (+ body margin), so a relay/connector whose
+    # case overhangs its pads is under-modelled. Silence here is how a board
+    # reports "0 overlaps" while a fifth of its relays sit on their neighbours.
+    no_crtyd_warning = ([{"kind": "no_courtyard", "refs": no_crtyd,
+                          "detail": f"these footprints draw no F.CrtYd — their "
+                          f"keep-out is a pad-bbox estimate + {body_margin_mm:g} "
+                          f"mm body margin, NOT a real courtyard. A body that "
+                          f"overhangs its pads (relays, connectors) is under-"
+                          f"modelled; check them by eye and add courtyards where "
+                          f"it matters."}] if no_crtyd else [])
     diagnostics = {
         "region": list(region),
         "area": int(area) if area is not None else None,
@@ -1095,6 +1116,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                            "radius_mm": round(r, 2)} for cx, cy, r in keepouts],
         "hole_clearance_mm": hole_clearance_mm,
         "min_gap_mm": min_gap_mm,
+        "body_margin_mm": body_margin_mm,
+        "no_courtyard_footprints": no_crtyd,
         "seeded": seeded,
         "boundary_nets": [asdict(t) for t in terminals],
         "fixed_inside_nets": sorted(fixed_inside),
@@ -1107,7 +1130,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"way. The proxy under-models THT bodies that overhang their pads — "
             f"run --list-courtyards to see which parts are proxied"),
         "geometry_warnings": _geometry_warnings(src_text, movable,
-                                                obstacle_refs),
+                                                obstacle_refs) + no_crtyd_warning,
         "infeasible_reason": None,
         "binding_constraint": None,
         "unrouted": [],
@@ -1120,7 +1143,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         pool = anneal_region(parts, region, specs, obstacles=obstacles,
                              keepouts=keepouts, fixed_points=fixed_points,
                              net_weights=net_weights, grid_mm=grid_mm,
-                             min_gap_mm=min_gap_mm,
+                             min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,
                              seed=seed, pool_size=k * 3, sweeps=sweeps)
     except RuntimeError as e:
         reason = str(e)
@@ -1714,6 +1737,11 @@ def main(argv=None):
                     help="minimum clearance GAP required between courtyards "
                     "(default 0.25); touching courtyards = 0 clearance = a DRC "
                     "crash. 0 reverts to plain no-overlap")
+    ap.add_argument("--body-margin", type=float, default=1.0, metavar="MM",
+                    help="extra keep-out margin for footprints with NO F.CrtYd "
+                    "(default 1.0), where the pad bbox under-models the body "
+                    "(relays, connectors); parts WITH a real courtyard are "
+                    "untouched. 0 uses the raw pad bbox")
     ap.add_argument("--via-weight", type=float, default=VIA_WEIGHT_MM,
                     help="mm of track a via is worth when ranking")
     ap.add_argument("--keep-work", action="store_true",
@@ -1763,6 +1791,7 @@ def main(argv=None):
             auto_fix_locked=not args.no_auto_fix_locked,
             respect_positions=args.respect_positions,
             hole_clearance_mm=args.hole_clearance, min_gap_mm=args.min_gap,
+            body_margin_mm=args.body_margin,
             progress=None if args.json else (lambda m: print(m, flush=True)))
     except ValueError as e:
         ap.error(str(e))

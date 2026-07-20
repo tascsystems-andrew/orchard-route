@@ -449,16 +449,20 @@ def test_geometry_warnings():
           f"({len(custom)} such footprints on the board)")
     res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
                           constraints=ACC_CONSTRAINTS, k=1, min_gap_mm=0.0,
+                          body_margin_mm=0.0,
                           out_dir=os.path.join(OUT_DIR, "warn"), sweeps=30)
     w = res.diagnostics.get("geometry_warnings") or []
-    check(len(w) == 1 and set(w[0]["refs"]) == {"Q2", "Q3"},
+    custom = [x for x in w if x["kind"] == "custom_pad_shape"]
+    check(len(custom) == 1 and set(custom[0]["refs"]) == {"Q2", "Q3"},
           f"the run warns about exactly the parts whose copper it cannot see "
-          f"({[x['refs'] for x in w]})")
+          f"({[x['refs'] for x in custom]})")
     plain = optimize_region(
         os.path.join(SYN_DIR, "right", "synth.kicad_pcb"), MOVABLE, FENCE,
         out_dir=os.path.join(OUT_DIR, "warn-none"), k=1, sweeps=20)
-    check((plain.diagnostics.get("geometry_warnings") or []) == [],
-          "a board with no custom pads gets no invented warning")
+    plain_custom = [x for x in (plain.diagnostics.get("geometry_warnings") or [])
+                    if x["kind"] == "custom_pad_shape"]
+    check(plain_custom == [],
+          "a board with no custom pads gets no invented custom-pad warning")
 
 
 def test_acceptance():
@@ -474,7 +478,7 @@ def test_acceptance():
     res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
                           constraints=ACC_CONSTRAINTS, k=5, pitch_mm=0.5,
                           layers=["F.Cu", "B.Cu"], out_dir=out, seed=0,
-                          min_gap_mm=0.0,
+                          min_gap_mm=0.0, body_margin_mm=0.0,
                           progress=lambda m: print("   " + m, flush=True))
     elapsed = time.perf_counter() - t0
 
@@ -997,6 +1001,16 @@ def test_hole_keepouts():
                                  20.0, 20.0, 4.6)
         for c in res.candidates for r in ["R0", "R1", "R2", "R3", "R4", "R5"])
     check(clear, "no placed courtyard intersects the hole keep-out")
+
+    # finding C: R0..R5 are SMD with no F.CrtYd, so the run WARNS them by name
+    # (silence here is how a board reports "0 overlaps" while relays overlap).
+    allrefs = {"R0", "R1", "R2", "R3", "R4", "R5"}
+    nc = [x for x in (d.get("geometry_warnings") or [])
+          if x["kind"] == "no_courtyard"]
+    check(len(nc) == 1 and set(nc[0]["refs"]) == allrefs
+          and set(d.get("no_courtyard_footprints") or []) == allrefs,
+          f"no-courtyard footprints are warned BY NAME (finding C) "
+          f"({d.get('no_courtyard_footprints')})")
 
 
 # ── driver ───────────────────────────────────────────────────────────────────
