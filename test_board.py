@@ -269,6 +269,39 @@ def check_courtyards():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def check_sheets():
+    """board.footprint_sheets reads KiCad's (sheetname ...) per footprint, in
+    file order, None when absent — the ready-made schematic grouping (parts on
+    one sheet usually belong on one board)."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, "s.kicad_pcb")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(
+                '(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (44 "Edge.Cuts" user))\n\t(net 0 "")\n'
+                '\t(gr_rect (start 0 0) (end 40 20) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(footprint "R" (layer "F.Cu") (at 5 5)\n'
+                '\t\t(property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(sheetname "/power/")\n\t\t(sheetfile "power.kicad_sch")\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "R" (layer "F.Cu") (at 15 5)\n'
+                '\t\t(property "Reference" "R2" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(sheetname "/amp/")\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "R" (layer "F.Cu") (at 25 5)\n'
+                '\t\t(property "Reference" "R3" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                ')\n')
+        sh = load_board(p).footprint_sheets
+        check(sh == ("/power/", "/amp/", None),
+              f"footprint_sheets reads (sheetname ...) per footprint in order, "
+              f"None when absent ({sh})")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     checked = 0
 
@@ -278,6 +311,7 @@ if __name__ == "__main__":
     check_common(brd)
     check_parser(brd)
     check_courtyards()
+    check_sheets()
     checked += 1
 
     # Third-party bench boards (gitignored; skipped on a fresh clone) exercise
