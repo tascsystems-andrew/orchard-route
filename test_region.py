@@ -816,6 +816,80 @@ def test_pile_explicit_required():
           f"net_adjacency exposes connectivity as data (P1 -> {adj['P1']})")
 
 
+def test_pile_report_vs_named_scatter():
+    """Finding 1, correctly scoped — two questions the tool must NOT conflate:
+
+    - The UNPLACED REPORT names which UN-named parts belong to no area, and it
+      is board-outline-relative: a part whose courtyard is off EVERY Edge.Cuts
+      outline is pile; on-board furniture never is. This is the field report's
+      actual ask, and it is the behaviour that changed here (courtyard-vs-every-
+      outline, replacing an older centre-in-outline test).
+
+    - The SCATTER only ever sees parts the caller EXPLICITLY NAMED for this
+      fence, so 'off this fence' is the right trigger there: a named part off
+      the fence — origin pile, an F8 / Update-PCB drop at arbitrary coordinates,
+      a neighbouring area, an adjacent band — was named to be moved HERE and is
+      scattered in. Making scatter outline-relative would refuse to move a named
+      on-board part and STRAND it off-fence (an adversarial review caught
+      exactly that regression); the guards below lock the fence-relative
+      behaviour in."""
+    print("=== pile: outline-relative REPORT, fence-relative NAMED scatter ===")
+    from region import seed_placement, _translate, _resolve_placement_set
+    from lattice import board_outline_regions
+    from place import part_courtyard
+    src = os.path.join(SYN_DIR, "multiarea", "ma.kicad_pcb")
+    write_multiarea(src)
+    regions = board_outline_regions(load_board(src))
+    check(len(regions) == 3, f"the fixture has 3 outline regions (got {len(regions)})")
+    all_parts = parts_from_board(src)
+    area0 = (10.0, 10.0, 50.0, 40.0)   # fences area 0; areas 1/2 are elsewhere
+
+    def inside0(part):
+        c = part_courtyard(part)
+        return (c[0] >= area0[0] - 1e-6 and c[1] >= area0[1] - 1e-6
+                and c[2] <= area0[0] + area0[2] + 1e-6
+                and c[3] <= area0[1] + area0[3] + 1e-6)
+
+    # REPORT is outline-relative. components=None -> unplaced names exactly the
+    # off-board pile (P1..P9 at (2,80)); on-board furniture A1 (area 1) and A2
+    # (area 2) are on real boards and are NEVER called unplaced.
+    _mv, _af, _ef, unplaced = _resolve_placement_set(
+        all_parts, area0, None, True, regions=regions)
+    check(sorted(unplaced) == sorted(MA_PILE),
+          f"unplaced report is outline-relative: exactly the off-board pile is "
+          f"flagged, on-board A1/A2 are not (got {sorted(unplaced)})")
+
+    # SCATTER guard 1 (the regression the review caught): a NAMED part sitting
+    # ON the board in another area — off THIS fence — is still scattered INTO
+    # this fence. It was named to be moved here; an outline-relative trigger
+    # would leave it stranded at (175, 30). This is the mutation guard.
+    p_area2 = _translate(all_parts["P1"], 175.0, 30.0)     # squarely in area 2
+    out, moves = seed_placement([p_area2], area0, [], [], 0.5)
+    p1 = next(p for p in out if p.ref == "P1")
+    check({m["ref"] for m in moves} == {"P1"} and inside0(p1),
+          "a named on-board part in another area IS scattered into this fence "
+          "(named = move it here) — not left stranded off-fence")
+
+    # SCATTER guard 2 (headline fix, already on HEAD): F8 drops at arbitrary
+    # off-board coordinates — not just the collapsed origin — all scatter in.
+    f8 = [_translate(all_parts[r], 400.0 + 25.0 * j, 30.0)
+          for j, r in enumerate(MA_PILE)]
+    _o, mv2 = seed_placement(f8, area0, [], [], 0.5)
+    check({m["ref"] for m in mv2} == set(MA_PILE)
+          and all(inside0(p) for p in _o),
+          f"F8 drops at arbitrary off-board coordinates all scatter in "
+          f"({len(mv2)}/{len(MA_PILE)}) — pile is not just the origin")
+
+    # A part whose courtyard already OVERLAPS the fence keeps its position (the
+    # anneal refines it); only off-fence named parts are gridded fresh.
+    p_in = _translate(all_parts["P2"], 30.0, 30.0)         # inside area 0
+    out3, mv3 = seed_placement([p_in], area0, [], [], 0.5)
+    p2 = next(p for p in out3 if p.ref == "P2")
+    check(not mv3 and (round(p2.x_mm, 3), round(p2.y_mm, 3)) == (30.0, 30.0),
+          "a named part already inside the fence is left where it is, not "
+          "re-scattered")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -923,6 +997,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("locked_flag", test_locked_flag), ("area_fence", test_area_fence),
          ("auto_fix", test_auto_fix_locked), ("pile", test_offboard_pile),
          ("pile_explicit", test_pile_explicit_required),
+         ("pile_report", test_pile_report_vs_named_scatter),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),
          ("acceptance", test_acceptance)]
