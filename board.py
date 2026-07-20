@@ -385,7 +385,7 @@ def _footprint_side(fp):
 
 
 #: "height=16mm" / "height 16mm" / "height: 16 mm" in a descr or tags string.
-_HEIGHT_RE = re.compile(r"height\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*mm", re.I)
+_HEIGHT_RE = re.compile(r"\bheight\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*mm", re.I)
 _NUM_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)")
 
 
