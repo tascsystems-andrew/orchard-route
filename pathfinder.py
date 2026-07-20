@@ -68,6 +68,15 @@ class RouteResult:
     clearance_stats: dict = None  # ring/edge/degrade counters when a
                                   # lattice.Clearance was in force; else None
     via_stats: dict = None        # via-exclusion halo counters, or None
+    claimed: dict = None          # net_code -> frozenset of lattice nodes this
+                                  # net's routed copper OCCUPIES, incl. its via +
+                                  # track clearance halo (the _footprint the rest
+                                  # of the board was priced against). Seed the
+                                  # next tier's node_owner with this for exact
+                                  # inter-tier clearance (route_tiered).
+    tiers: list = None            # route_tiered only: per-tier report
+                                  # [{clearance, nets, routed, failed}], most-
+                                  # constrained first.
     geometry: object = None       # geometry.CopperGeometry in force, or None
     geometry_note: str = None   # its one-line summary (the contract, printed
                                 # every run — the tool states its own limits)
@@ -824,11 +833,115 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
                          for x1, y1, x2, y2, _, _ in tracks)  # axis-aligned
     sec["emit"] = time.perf_counter() - t0
 
+    # Per-net occupied+halo footprint — the copper the rest of the board was
+    # priced against. A tiered route (route_tiered) seeds the next tier's
+    # node_owner with this so a later, less-constrained class treats this tier's
+    # copper AND its clearance halo as a hard obstacle (the halo is the widest
+    # class's, since tiers route most-constrained first).
+    claimed = {}
+    for net, paths in net_paths.items():
+        s = set()
+        for path in paths:
+            s.update(foot(net, path))
+        if s:
+            claimed[net] = frozenset(s)
+
     return RouteResult(net_paths=net_paths, failed=failed, conflicts=conflicts,
                        iterations=iterations, overuse_curve=overuse_curve,
                        wirelength_mm=wirelength, via_count=len(vias), seconds=sec,
                        tracks=sm_tracks, vias=sm_vias,
                        clearance_stats=clearance_stats,
+                       via_stats=via_stats, claimed=claimed)
+
+
+def route_tiered(lat, net_pads, tier_of, node_owner=None, terminal_nets=None,
+                 progress=None, **kw):
+    """Route by clearance TIER — most-constrained net class first — chaining each
+    finished tier's committed copper (path + clearance halo) into node_owner so a
+    later, less-constrained tier treats it as a hard obstacle.
+
+    This is how a 7.2 mm-halo HV class and a 0.2 mm logic class coexist. One
+    simultaneous pass cannot: the wide halos and the fine tracks fight over the
+    same nodes and the overuse curve never falls (measured on Voxy region 1: HV
+    alone routed 10/20). Routed in descending-clearance order, the wide copper
+    claims its creepage FIRST — against empty board — and the fine copper fills
+    the room that is left; the inter-tier gap is the wider class's halo, exactly
+    what DRC wants (route_lattice returns that halo in RouteResult.claimed).
+
+    tier_of : net_code -> clearance mm (or any sort key); nets with equal key
+              form a tier and tiers run in DESCENDING key order. A net absent
+              from tier_of routes last (least constrained).
+    node_owner : pre-seeded with the FULL pad ownership over ALL nets, so a
+              tier's copper clears every foreign pad, not only its own tier's.
+    kw : every route_lattice keyword (clearance, net_exclusion, via_exclusion_mm,
+              allow_diagonals, ...) — the SAME per-net rings apply to every tier
+              (pad geometry is static); only node_owner grows.
+
+    Returns one merged RouteResult, with .tiers a per-tier report."""
+    say = progress or (lambda *_a, **_kw: None)
+    # full pad ownership over ALL nets, so a tier avoids every foreign pad, not
+    # just its own tier's. The CALLER's node_owner is authoritative (it carries
+    # a board router's collision-resolved pads AND terminal keep-outs), so it
+    # WINS over this fill — full_claim only supplies pads node_owner lacks (e.g.
+    # a standalone call with no node_owner).
+    _c, _x, full_claim = build_connections(net_pads, terminal_nets)
+    owner = {**full_claim, **(node_owner or {})}
+
+    groups = {}
+    for net in net_pads:
+        if net > 0:
+            groups.setdefault(float(tier_of.get(net, 0.0)), []).append(net)
+    order = sorted(groups, reverse=True)          # most-constrained first
+
+    paths, failed, conflicts, tracks, vias = {}, [], [], [], []
+    overuse, seconds, tiers, merged_claimed = [], {}, [], {}
+    iters = 0
+    clr_stats = via_stats = None
+    for clr in order:
+        nets = groups[clr]
+        sub = {n: net_pads[n] for n in nets}
+        subterm = ({n: terminal_nets[n] for n in nets if n in terminal_nets}
+                   if terminal_nets else None)
+        res = route_lattice(lat, sub, node_owner=owner, terminal_nets=subterm,
+                            **kw)
+        # the pad-ring / via-halo geometry is class-level, so the same clearance
+        # object drives every tier — carry the first tier's stats up (a caller
+        # inspecting inflate_mm should not see None just because tiering ran).
+        if clr_stats is None:
+            clr_stats = res.clearance_stats
+        if via_stats is None:
+            via_stats = res.via_stats
+        paths.update(res.net_paths)
+        failed.extend(res.failed)
+        conflicts.extend(res.conflicts)
+        if res.tracks:
+            tracks.extend(res.tracks)
+        if res.vias:
+            vias.extend(res.vias)
+        overuse.extend(res.overuse_curve or [])
+        iters += res.iterations
+        for k, v in (res.seconds or {}).items():
+            # sum wall-clock seconds across tiers; a ratio like refine_gain_pct
+            # is not additive, so keep the last tier's value rather than sum it.
+            seconds[k] = v if k.endswith("_pct") else seconds.get(k, 0.0) + v
+        # chain this tier's copper + halo into node_owner for later tiers
+        for net, nodes in (res.claimed or {}).items():
+            merged_claimed[net] = nodes
+            for n in nodes:
+                owner[n] = net
+        nfail = len({f[0] for f in res.failed})
+        tiers.append({"clearance_mm": clr, "nets": len(nets),
+                      "routed": len(nets) - nfail, "failed": nfail})
+        say(f"tier    {clr:g} mm: {len(nets)} net(s), "
+            f"{len(nets) - nfail} routed, {nfail} failed")
+
+    wl = (sum(math.hypot(x2 - x1, y2 - y1) for x1, y1, x2, y2, _, _ in tracks)
+          if tracks else 0.0)
+    return RouteResult(net_paths=paths, failed=failed, conflicts=conflicts,
+                       iterations=iters, overuse_curve=overuse,
+                       wirelength_mm=wl, via_count=len(vias), seconds=seconds,
+                       tracks=tracks or None, vias=vias or None, tiers=tiers,
+                       claimed=merged_claimed, clearance_stats=clr_stats,
                        via_stats=via_stats)
 
 
@@ -1448,8 +1561,16 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
                 via_cost=12.0, dir_penalty=1.25, clearance_mm=None,
                 track_width_mm=None, via_size_mm=None, via_exclusion=True,
                 fab=None, fab_enforce=False, width_map=None,
-                max_width_mm=None, region_index=None, **kwargs):
+                max_width_mm=None, region_index=None, tiered="auto", **kwargs):
     """Load, lattice, route. Returns (board, lat, RouteResult).
+
+    tiered: route by clearance TIER, most-constrained net class first, chaining
+    each tier's copper+halo into node_owner (route_tiered). "auto" (default)
+    tiers whenever the board resolves MORE THAN ONE net-class clearance — a wide
+    HV-creepage class and a fine logic class cannot share one negotiation pass
+    (the halos and the fine tracks fight, overuse never falls). True forces it,
+    False keeps the single simultaneous pass. A caller-supplied global clearance
+    (clearance_mm) flattens the classes, so tiering is moot and disabled.
 
     region_index: which of the board's disjoint Edge.Cuts outlines to route.
     A .kicad_pcb may hold several — a PANEL of separate boards, with air
@@ -1697,9 +1818,51 @@ def route_board(board_path, pitch_mm=1.0, layer_names=None, directions="both",
         brd, lat, node_owner, clearance, net_clearance, geo, spanning, _term)
     region_warnings += terminal_report
 
-    res = route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
-                        clearance=clearance,
-                        terminal_nets=terminal_conn or None, **kwargs)
+    # tier by clearance when the board genuinely separates classes and no global
+    # clearance flattened them. "auto" needs a real SPREAD — the widest class's
+    # clearance at least one grid step beyond the finest — so a wide HV-creepage
+    # class that fights fine tracks tiers, but a trivial Power-vs-Default gap
+    # (which one simultaneous pass handles well) keeps the proven single pass.
+    _clrs = set(net_clearance.values())
+    _spread = bool(_clrs) and (max(_clrs) - min(_clrs)) >= geo.pitch_mm
+    do_tier = clearance_arg is None and (
+        tiered is True or (tiered == "auto" and len(_clrs) > 1 and _spread))
+    def _simultaneous():
+        return route_lattice(lat, net_pads, node_owner, extra_allow=extra_allow,
+                             clearance=clearance,
+                             terminal_nets=terminal_conn or None, **kwargs)
+    if do_tier:
+        res = route_tiered(lat, net_pads, net_clearance, node_owner=node_owner,
+                           extra_allow=extra_allow, clearance=clearance,
+                           terminal_nets=terminal_conn or None, **kwargs)
+        # KEEP WHICHEVER ROUTES MORE (adversarial review): tiering wins on the
+        # HV-fights-fine boards it exists for, but on an easy board an early wide
+        # tier can wall a corner the fine tier still needs — routing FEWER nets
+        # than one simultaneous negotiation would. So when tiering leaves any net
+        # unrouted, run the simultaneous pass too and keep the better of the two;
+        # auto-tiering can then never silently regress a fully-routable board.
+        if res.failed:
+            sim = _simultaneous()
+            if len({f[0] for f in sim.failed}) < len({f[0] for f in res.failed}):
+                region_warnings.append(
+                    f"tiered route left {len({f[0] for f in res.failed})} net(s) "
+                    f"unrouted; kept the simultaneous pass "
+                    f"({len({f[0] for f in sim.failed})} unrouted)")
+                res = sim
+            else:
+                region_warnings.append(
+                    "routed by clearance tier (most-constrained class first): "
+                    + ", ".join(f"{t['clearance_mm']:g}mm x{t['nets']}"
+                                f"({t['routed']}/{t['nets']})"
+                                for t in (res.tiers or [])))
+        else:
+            region_warnings.append(
+                "routed by clearance tier (most-constrained class first): "
+                + ", ".join(f"{t['clearance_mm']:g}mm x{t['nets']}"
+                            f"({t['routed']}/{t['nets']})"
+                            for t in (res.tiers or [])))
+    else:
+        res = _simultaneous()
     res.seconds = {"load": t_load, "lattice": t_lat, **res.seconds}
     res.geometry = geo
     res.geometry_note = geo.summary()
