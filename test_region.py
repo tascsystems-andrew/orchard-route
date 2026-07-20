@@ -396,6 +396,75 @@ ACC_CONSTRAINTS = [
 ]
 
 
+def test_density_preflight():
+    """Courtyard-density preflight (field report Finding 4): utilization is
+    reported every run, above ~60% it WARNS the search will be tight, and an
+    over-full fence comes back with a concrete grow number (not just 'grow the
+    fence'). Parts carry a real 2x2 F.CrtYd -> part_courtyard 2.5x2.5 = 6.25 mm2
+    each, so the numbers are exact and body-margin-independent."""
+    print("=== density preflight (finding 4) ===")
+
+    def board(path, n):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fps = "".join(
+            f'\t(footprint "R" (layer "F.Cu") (at {2 + (i % 8) * 3} '
+            f'{2 + (i // 8) * 3})\n'
+            f'\t\t(property "Reference" "R{i}" (at 0 0 0) (layer "F.SilkS"))\n'
+            f'\t\t(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) '
+            f'(layer "F.CrtYd") (width 0.05))\n'
+            f'\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") '
+            f'(net {i + 1} "N{i}")))\n' for i in range(n))
+        nets = "".join(f'\t(net {i} "N{i}")\n' for i in range(n + 1))
+        with open(path, "w") as f:
+            f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                    '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                    '(44 "Edge.Cuts" user) (45 "F.CrtYd" user))\n' + nets +
+                    '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") '
+                    '(width 0.1))\n' + fps + ")\n")
+
+    fence = (0.0, 0.0, 10.0, 10.0)          # 100 mm2; each part 6.25 mm2
+
+    # 20 parts -> 125 mm2 -> 125%: impossible, zero candidates, a grow number.
+    imp = os.path.join(SYN_DIR, "dens", "imp.kicad_pcb")
+    board(imp, 20)
+    res = optimize_region(imp, [f"R{i}" for i in range(20)], fence, k=2,
+                          sweeps=20, seed=0,
+                          out_dir=os.path.join(OUT_DIR, "dens-imp"))
+    dn = res.diagnostics["density"]
+    check(dn["verdict"] == "impossible" and abs(dn["utilization"] - 1.25) < 0.02,
+          f"20 parts (125 mm2) in a 100 mm2 fence -> impossible at "
+          f"{dn['utilization']:.0%}")
+    check(not res.candidates, "an over-full fence returns zero candidates")
+    se = res.diagnostics.get("suggested_expansion") or {}
+    check(bool(se.get("direction")) and se.get("mm", 0) > 0
+          and "utilization" in se.get("reason", ""),
+          f"suggested_expansion is a concrete density-based grow number "
+          f"({se.get('mm')} mm — {se.get('reason', '')[:48]}...)")
+
+    # 12 parts -> 75 mm2 -> 75%: tight (warned) but still searched.
+    tig = os.path.join(SYN_DIR, "dens", "tight.kicad_pcb")
+    board(tig, 12)
+    res2 = optimize_region(tig, [f"R{i}" for i in range(12)], fence, k=2,
+                           sweeps=40, seed=0,
+                           out_dir=os.path.join(OUT_DIR, "dens-tight"))
+    dn2 = res2.diagnostics["density"]
+    check(dn2["verdict"] == "tight" and 0.60 <= dn2["utilization"] < 1.0,
+          f"12 parts -> tight at {dn2['utilization']:.0%} (warned, still searched)")
+
+    # 4 parts -> 25 mm2 -> 25%: ok, no warning.
+    okb = os.path.join(SYN_DIR, "dens", "ok.kicad_pcb")
+    board(okb, 4)
+    res3 = optimize_region(okb, [f"R{i}" for i in range(4)], fence, k=2,
+                           sweeps=40, seed=0,
+                           out_dir=os.path.join(OUT_DIR, "dens-ok"))
+    dn3 = res3.diagnostics["density"]
+    check(dn3["verdict"] == "ok" and dn3["utilization"] < 0.60,
+          f"4 parts -> ok at {dn3['utilization']:.0%} (no density warning)")
+    check(dn3["fence_mm2"] == 100.0 and abs(dn3["courtyard_mm2"] - 25.0) < 0.1,
+          f"density reports exact areas (25 of 100 mm2) — utilization is not a "
+          f"black box ({dn3['courtyard_mm2']} / {dn3['fence_mm2']})")
+
+
 def test_preflight():
     """adjacency_max_distance is CENTER-to-center, so on real parts it has a
     hard geometric floor. The floor must be EXACT in both directions: refusing
@@ -1013,6 +1082,99 @@ def test_hole_keepouts():
           f"({d.get('no_courtyard_footprints')})")
 
 
+def test_pad_clearance():
+    """optimize_region enforces pad-to-pad COPPER clearance per net class
+    (finding §2/§5): the project's HV creepage number reaches the placer, the
+    whole-board write-time verify runs and is clean, and --no-pad-clearance
+    disables it. gain_stage carries only a Default class, so this owns the
+    region-level wiring for a real class-specific clearance."""
+    print("=== pad-copper clearance through optimize_region (finding §2/§5) ===")
+    import json as _json
+    from place import pad_clearance_report, pad_world_corners
+    src = os.path.join(SYN_DIR, "padclr", "p.kicad_pcb")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    # 4 movable SMD parts chained N0-N1-N2-N3-N4 so HPWL pulls them together.
+    fps = "".join(
+        f'\t(footprint "R" (layer "F.Cu") (at {5 + 5 * i} 9)\n'
+        f'\t\t(property "Reference" "R{i}" (at 0 0 0) (layer "F.SilkS"))\n'
+        f'\t\t(pad "1" smd rect (at -1 0) (size 1.5 1.5) (layers "F.Cu") '
+        f'(net {i} "N{i}"))\n'
+        f'\t\t(pad "2" smd rect (at 1 0) (size 1.5 1.5) (layers "F.Cu") '
+        f'(net {i + 1} "N{i + 1}")))\n' for i in range(4))
+    nets = "".join(f'\t(net {i} "N{i}")\n' for i in range(5))
+    with open(src, "w", encoding="utf-8") as f:
+        f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                '(44 "Edge.Cuts" user))\n' + nets +
+                '\t(gr_rect (start 0 0) (end 40 20) (layer "Edge.Cuts") '
+                '(width 0.1))\n' + fps + ")\n")
+    # sibling project: an HV class on N2 at 0.6 mm (a creepage number, 3x the
+    # 0.2 default) — the exact "HV nets want their big number here" of the finding.
+    pro = os.path.splitext(src)[0] + ".kicad_pro"
+    with open(pro, "w", encoding="utf-8") as f:
+        _json.dump({"net_settings": {"classes": [
+            {"name": "Default", "clearance": 0.2},
+            {"name": "HV", "clearance": 0.6}],
+            "netclass_assignments": {"N2": "HV"}}}, f)
+
+    refs = ["R0", "R1", "R2", "R3"]
+    fence = (1.0, 1.0, 38.0, 18.0)
+    res = optimize_region(src, refs, fence, k=3, sweeps=60, seed=0,
+                          out_dir=os.path.join(OUT_DIR, "padclr"))
+    d = res.diagnostics
+    check(d["pad_clearance"]["enabled"] is True
+          and abs(d["pad_clearance"]["max_mm"] - 0.6) < 1e-9,
+          f"the project's HV 0.6 mm clearance reaches placement, not the 0.2 "
+          f"default (max_mm={d['pad_clearance']['max_mm']})")
+    pv = d.get("placement_verify") or {}
+    check(pv.get("pad_clearance_checked") is True and pv.get("clean") is True,
+          "the whole-board write-time verify runs and every shipped candidate is "
+          "pad-clean (finding §5)")
+    check(bool(res.candidates),
+          f"parts still place with pad clearance on ({len(res.candidates)})")
+    # independent whole-board scan: no different-net pad on any candidate sits
+    # within the resolved clearance (0.6 for N2 pairs, 0.2 elsewhere).
+    clr_by_name = {"N0": 0.2, "N1": 0.2, "N2": 0.6, "N3": 0.2, "N4": 0.2, "": 0.2}
+    want = set(refs)
+    shorts = 0
+    for c in res.candidates:
+        cb = load_board(c.board_copy)
+        rop = _pad_owner_refs(c.board_copy, cb)
+        pads = [(rop[i], p.net_name, frozenset(p.layers), pad_world_corners(p))
+                for i, p in enumerate(cb.pads) if p.layers]
+        shorts += sum(1 for v in pad_clearance_report(pads, clr_by_name, 0.2)
+                      if v[0] in want or v[2] in want)
+    check(shorts == 0,
+          f"independent whole-board scan finds no different-net pad short in any "
+          f"shipped candidate at the resolved clearances ({shorts})")
+
+    # non-vacuous: the same output boards DO carry different-net pads within an
+    # absurd 5 mm clearance — so 'clean at 0.6' is a real threshold, not parts
+    # that happen to be miles apart.
+    tight = 0
+    for c in res.candidates:
+        cb = load_board(c.board_copy)
+        rop = _pad_owner_refs(c.board_copy, cb)
+        pads = [(rop[i], p.net_name, frozenset(p.layers), pad_world_corners(p))
+                for i, p in enumerate(cb.pads) if p.layers]
+        tight += sum(1 for v in pad_clearance_report(
+            pads, {n: 5.0 for n in clr_by_name}, 5.0)
+            if v[0] in want or v[2] in want)
+    check(tight > 0,
+          "the same candidates have different-net pads within 5 mm — the 0.6 mm "
+          "clean bill is a real constraint, not trivially-separated parts")
+
+    res_off = optimize_region(src, refs, fence, k=2, sweeps=40, seed=0,
+                              pad_clearance=False,
+                              out_dir=os.path.join(OUT_DIR, "padclr-off"))
+    d2 = res_off.diagnostics
+    check(d2["pad_clearance"]["enabled"] is False
+          and (d2.get("placement_verify") or {}).get(
+              "pad_clearance_checked") is False,
+          "--no-pad-clearance disables the check and its write-time verify "
+          "(A/B measurement only)")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -1123,6 +1285,8 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("pile_report", test_pile_report_vs_named_scatter),
          ("list_courtyards", test_list_courtyards),
          ("hole_keepouts", test_hole_keepouts),
+         ("pad_clearance", test_pad_clearance),
+         ("density", test_density_preflight),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),
          ("acceptance", test_acceptance)]

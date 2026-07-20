@@ -79,18 +79,20 @@ from constraints import evaluate_constraints, parse_constraints
 from lattice import (clearance_map, default_copper_rules, lattice_for_board,
                      pad_overlap_allowances)
 from place import (COURTYARD_MARGIN_MM, PlacementModel, anneal_region,
-                   net_weights_from_project, part_courtyard, parts_from_board)
+                   net_weights_from_project, pad_clearance_report,
+                   pad_world_corners, part_courtyard, parts_from_board)
 # The local (unrotated) courtyard frame and the rotate-a-rect transform.
 # part_courtyard is the public wrapper for ONE placement; the preflight needs
 # the same geometry at rotations the part is not currently at, and a second
 # implementation of KiCad's CCW/Y-down convention in this file is exactly the
 # drift that produces two answers to one question.
-from place import _local_geometry, _world_rect, _rect_circle_overlap
+from place import (_local_geometry, _world_rect, _rect_circle_overlap,
+                   _pad_has_copper)
 from pathfinder import net_pads_for_board, paths_to_tracks, route_lattice
 from render import render_svg
 from writeback import (board_footprints, cap_track_widths,
-                       load_net_class_widths, project_file_for,
-                       write_moved_copy, write_routed_copy)
+                       load_net_class_clearances, load_net_class_widths,
+                       project_file_for, write_moved_copy, write_routed_copy)
 # region.py does its own text surgery (stripping the fence's existing copper),
 # and writeback owns the ONE span-preserving tokenizer for this file format.
 # Re-tokenizing here with a second grammar is exactly how the two drift apart.
@@ -426,7 +428,7 @@ def _min_center_distance(a_rects, b_rects):
     return best
 
 
-def preflight(parts, region, specs, obstacles=()):
+def preflight(parts, region, specs, obstacles=(), body_margin_mm=0.0):
     """Reasons this problem cannot have a solution, found BEFORE the search
     burns a minute discovering it the hard way — with the number that would
     make it possible.
@@ -442,7 +444,10 @@ def preflight(parts, region, specs, obstacles=()):
 
     area = 0.0
     for p in parts:
-        x0, y0, x1, y1 = part_courtyard(p)
+        # the SAME keep-out the model enforces: a no-courtyard part is padded by
+        # body_margin_mm there, so an area/fit verdict computed without it would
+        # under-predict and let the search discover the failure the hard way.
+        x0, y0, x1, y1 = part_courtyard(p, body_margin_mm=body_margin_mm)
         area += (x1 - x0) * (y1 - y0)
         if (x1 - x0) > rw + 1e-9 or (y1 - y0) > rh + 1e-9:
             if (y1 - y0) > rw + 1e-9 or (x1 - x0) > rh + 1e-9:
@@ -490,6 +495,64 @@ def preflight(parts, region, specs, obstacles=()):
             out.append(f"{c}: the fence's own diagonal is only {diag:.2f} mm, "
                        f"so no placement can separate them that far")
     return out
+
+
+def _density_report(parts, region, obstacles=(), body_margin_mm=0.0):
+    """Courtyard-sum vs fence area — the ~10-line preflight that predicted every
+    genuine infeasibility and exonerated every false one on the Voxy bands
+    (field report Finding 4: bandA 129% failed, bandE 31% did not). Computed from
+    courtyard AREAS, which are position- and rotation-invariant, so it is honest
+    before the parts are seeded anywhere.
+
+    utilization is courtyard-sum / fence area — the same denominator preflight's
+    hard area check uses, so the two never disagree (a report that says
+    'impossible' while preflight lets the search run would be exactly the tool
+    saying one thing and doing another). Obstacle area under the fence is
+    reported alongside (free_utilization) but does NOT drive the verdict: the
+    preflight is deliberately loose so it can never be a false negative."""
+    rx, ry, rw, rh = region
+    fence = rw * rh
+    court = 0.0
+    for p in parts:
+        x0, y0, x1, y1 = part_courtyard(p, body_margin_mm=body_margin_mm)
+        court += (x1 - x0) * (y1 - y0)
+    blocked = min(fence, sum(
+        max(0.0, min(o[2], rx + rw) - max(o[0], rx))
+        * max(0.0, min(o[3], ry + rh) - max(o[1], ry)) for o in obstacles))
+    free = max(fence - blocked, 0.0)
+    util = court / fence if fence > 0 else math.inf
+    # 'impossible' is EXACTLY preflight's hard area condition (court > fence, same
+    # body-margin courtyards) so the two can never disagree — a density verdict
+    # of impossible always coincides with zero candidates + an infeasible reason,
+    # never with a run that ships. 'tight' is the >=60% congestion warning.
+    verdict = ("impossible" if court > fence + 1e-9
+               else "tight" if util >= 0.60 else "ok")
+    return {"courtyard_mm2": round(court, 1), "fence_mm2": round(fence, 1),
+            "blocked_mm2": round(blocked, 1), "free_mm2": round(free, 1),
+            "utilization": round(util, 3),
+            "free_utilization": round(court / free, 3) if free > 0 else None,
+            "verdict": verdict}
+
+
+def _density_expansion(region, court_mm2, target=0.75):
+    """A concrete fence growth from courtyard density (finding 4's ask: a number
+    next to the utilization, not just 'grow the fence'): how much to add so the
+    movable courtyards fill at most `target` of the fence. Grows the shorter side
+    and reports in the same shape as _suggest_expansion, so the CLI renders it
+    identically. Returns None when the fence already meets the target."""
+    rx, ry, rw, rh = region
+    fence = rw * rh
+    if target <= 0 or court_mm2 <= target * fence + 1e-9:
+        return None
+    need_area = court_mm2 / target
+    short, long_, side = (rw, rh, "right") if rw <= rh else (rh, rw, "bottom")
+    grow = max(2.0, math.ceil((need_area / long_ - short) * 2) / 2)
+    return {"direction": side, "mm": round(grow, 2), "pressure": None,
+            "reason": f"courtyards need {court_mm2:.0f} mm2 = "
+                      f"{court_mm2 / fence:.0%} of the {fence:.0f} mm2 fence; add "
+                      f"~{grow:.1f} mm on the {side} to reach {target:.0%} "
+                      f"utilization (a density lower bound — packing and "
+                      f"clearances may need more)"}
 
 
 # ── seeding ──────────────────────────────────────────────────────────────────
@@ -910,7 +973,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                     class_weights=None, keep_work=False, progress=None,
                     route_kwargs=None, area=None, auto_fix_locked=True,
                     respect_positions=False, hole_clearance_mm=3.0,
-                    min_gap_mm=0.25, body_margin_mm=1.0):
+                    min_gap_mm=0.25, body_margin_mm=1.0, pad_clearance=True):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
@@ -939,6 +1002,15 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                    and KiCad DRC flags it. 0 reverts to plain no-overlap. If a
                    run that used to place returns zero candidates, this default
                    is the first knob to check (it's named in infeasible_reason).
+    pad_clearance : enforce pad-to-pad COPPER clearance between different nets
+                   on shared layers, per net class (default True). Courtyard
+                   non-overlap is an assembly halo and says nothing about where
+                   one pad's copper sits relative to another net's — a fat FET
+                   pad or an HV creepage rule shorts with clear courtyards. The
+                   search hard-rejects it and every shipped candidate is
+                   re-verified over its WHOLE board (diagnostics.placement_verify,
+                   feedback/placement-fidelity-2026-07-20 §2/§5). False disables
+                   it (A/B measurement only).
     k            : candidates to ship; k*3 finalists are routed
     out_dir      : everything this call writes lands here
 
@@ -1015,7 +1087,7 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     # 2 ── frozen furniture that intrudes into the fence
     fence_rect = (region[0], region[1],
                   region[0] + region[2], region[1] + region[3])
-    obstacles, obstacle_refs = [], []
+    obstacles, obstacle_refs, frozen_pads = [], [], []
     for ref, part in sorted(all_parts.items()):
         if ref in movable:
             continue
@@ -1023,6 +1095,17 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         if _rects_overlap(rect, fence_rect):
             obstacles.append(rect)
             obstacle_refs.append(ref)
+            # frozen COPPER: a locked/out-of-fence part's pads still occupy
+            # copper the movable group must clear (pad clearance, finding §2).
+            # Only the intruding obstacle set feeds the search (fast); the
+            # per-candidate write-time verify below re-checks the WHOLE board,
+            # so a short against copper outside this set is still caught (§5).
+            if pad_clearance:
+                for pad in part.pads:
+                    if pad.layers and _pad_has_copper(pad):
+                        frozen_pads.append(
+                            (pad.net_name or "", frozenset(pad.layers),
+                             tuple(pad_world_corners(pad))))
 
     # 2b ── mounting-hole keep-outs (finding A): each board hole (gr_circle),
     # inflated by screw-head clearance, that reaches into the fence. Movable
@@ -1030,6 +1113,13 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     # circular. A hole whose inflated circle never enters the fence is skipped.
     keepouts = [(cx, cy, r + hole_clearance_mm) for cx, cy, r in brd.holes
                 if _rect_circle_overlap(fence_rect, cx, cy, r + hole_clearance_mm)]
+
+    # 2c ── density preflight (finding 4): courtyard-sum vs fence area, computed
+    # from position-invariant areas, so it is honest before seeding. Predicts the
+    # genuine "too much for one fence" infeasibilities and, above ~60%, warns
+    # that the search will be tight — turned into a concrete grow number below.
+    density = _density_report(parts, region, obstacles,
+                              body_margin_mm=body_margin_mm)
 
     # 3 ── terminal propagation
     terminals, fixed_inside = boundary_terminals(brd, ref_of_pad, movable,
@@ -1046,12 +1136,28 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     net_weights = net_weights_from_project(board_path, sorted(net_names),
                                            class_weights=class_weights)
 
+    # pad-copper clearance per net class (finding §2). load_net_class_clearances
+    # is the emitters' own resolution (same _resolve_net_classes as widths), so
+    # a net's placement clearance and the clearance the router spaces it by can
+    # never disagree. Keyed by NAME to match the model's net identity. Nets no
+    # class claims fall to the project's Default clearance (default_pad_clr); on
+    # a tube amp the HV class carries the creepage number the placer must honour.
+    pro = project_file_for(board_path)
+    pad_clr_by_name, default_pad_clr = {}, 0.0
+    if pad_clearance:
+        default_pad_clr = default_copper_rules(board_path)[0]
+        if pro:
+            pad_clr_by_name = {brd.nets.get(code, ""): c for code, c
+                               in load_net_class_clearances(pro, brd.nets).items()}
+    pad_clearances = pad_clr_by_name if pad_clearance else None
+
     say(f"fence {region[2]:.1f} x {region[3]:.1f} mm"
         + (f" (area {area})" if area is not None else "")
         + f" | {len(movable_refs)} movable | {len(auto_fixed)} auto-fixed locked"
         + (f" ({', '.join(auto_fixed)})" if auto_fixed else "")
         + f" | {len(obstacles)} frozen obstacles | {len(keepouts)} hole keep-outs"
-        + f" | {len(terminals)} boundary nets")
+        + f" | {len(terminals)} boundary nets"
+        + (" | pad-clearance on" if pad_clearance else ""))
     if unplaced:
         say(f"note    {len(unplaced)} unlocked part(s) sit off every board "
             f"outline (a default-placed pile) and were NOT auto-added: "
@@ -1064,11 +1170,24 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"courtyard (a body overhanging its pads is under-modelled): "
             f"{', '.join(no_crtyd[:12])}"
             + (" ..." if len(no_crtyd) > 12 else ""))
+    # density: always printed (finding 4 — predictable failures should be
+    # predicted); a WARN prefix at >=60%, since above that the search is tight
+    # even when it succeeds and above 100% it cannot succeed as one fence.
+    say((f"warn    " if density["verdict"] != "ok" else "density ")
+        + f"{density['utilization']:.0%} courtyard density "
+        + f"({density['courtyard_mm2']:.0f} of {density['fence_mm2']:.0f} mm2 fence"
+        + (f", {density['blocked_mm2']:.0f} mm2 under obstacles"
+           if density["blocked_mm2"] > 0.5 else "") + ")"
+        + ("  — IMPOSSIBLE as one fence; grow it or split the group"
+           if density["verdict"] == "impossible"
+           else "  — tight, expect congestion and a slow / failing search"
+           if density["verdict"] == "tight" else ""))
 
     # 4 ── placement search. Preflight first (proving it impossible costs
     # milliseconds, discovering it by search costs the user's attention),
     # then a constraint-aware seed, then the anneal.
-    impossible = preflight(parts, region, specs, obstacles)
+    impossible = preflight(parts, region, specs, obstacles,
+                           body_margin_mm=body_margin_mm)
     parts, seeded = ([], []) if impossible else \
         seed_placement(parts, region, specs, obstacles, grid_mm,
                        respect_positions=respect_positions)
@@ -1079,7 +1198,9 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
     model = None if impossible else PlacementModel(
         parts, region, specs, obstacles=obstacles, keepouts=keepouts,
         fixed_points=fixed_points, net_weights=net_weights,
-        min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm)
+        min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,
+        pad_clearances=pad_clearances, default_pad_clearance_mm=default_pad_clr,
+        frozen_pads=frozen_pads)
     # how many placed footprints the collision model models from their REAL
     # F.CrtYd vs the pad-bbox proxy — so the note below tells the driver the
     # truth about this run's model instead of a stale blanket "proxy" claim.
@@ -1117,6 +1238,19 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         "hole_clearance_mm": hole_clearance_mm,
         "min_gap_mm": min_gap_mm,
         "body_margin_mm": body_margin_mm,
+        "density": density,
+        "pad_clearance": {
+            "enabled": bool(pad_clearance),
+            "default_mm": round(default_pad_clr, 4) if pad_clearance else None,
+            "max_mm": (round(max(pad_clr_by_name.values()), 4)
+                       if pad_clr_by_name else
+                       (round(default_pad_clr, 4) if pad_clearance else None)),
+            "frozen_pads": len(frozen_pads),
+            "note": ("pad-to-pad copper clearance between DIFFERENT nets on "
+                     "shared layers, per net class — courtyard non-overlap does "
+                     "not imply it (finding §2)") if pad_clearance
+                    else "disabled (--no-pad-clearance)"},
+        "placement_verify": None,
         "no_courtyard_footprints": no_crtyd,
         "seeded": seeded,
         "boundary_nets": [asdict(t) for t in terminals],
@@ -1144,6 +1278,9 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                              keepouts=keepouts, fixed_points=fixed_points,
                              net_weights=net_weights, grid_mm=grid_mm,
                              min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,
+                             pad_clearances=pad_clearances,
+                             default_pad_clearance_mm=default_pad_clr,
+                             frozen_pads=frozen_pads,
                              seed=seed, pool_size=k * 3, sweeps=sweeps)
     except RuntimeError as e:
         reason = str(e)
@@ -1160,12 +1297,22 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         if keepouts:
             extras.append(f"{len(keepouts)} mounting-hole keep-out(s) active at "
                           f"{hole_clearance_mm:g} mm clearance (--hole-clearance)")
+        if pad_clearance:
+            extras.append("pad-to-pad copper clearance per net class is enforced "
+                          "(--no-pad-clearance to relax) — an HV/creepage class "
+                          "asks for far more than the courtyard margin")
         if extras:
             reason += " | also active: " + "; ".join(extras)
         diagnostics["infeasible_reason"] = reason
-        diagnostics["suggested_expansion"] = _suggest_expansion(
+        # when courtyard density is the blocker, a concrete grow number beats the
+        # boundary-pressure reading (which is meaningless with no placement yet).
+        diagnostics["suggested_expansion"] = (
+            _density_expansion(region, density["courtyard_mm2"])
+            if density["verdict"] == "impossible" else None) or _suggest_expansion(
             region, [], terminals, pitch_mm,
-            fallback="no feasible placement exists yet — fix the reason above "
+            fallback="no feasible placement exists yet — the positions in the "
+                     "reason above are POST-SCATTER (the tool moved parts into "
+                     "the fence before failing), not your input; fix the reason "
                      "before reading anything into this direction")
         diagnostics["runtime_s"] = round(time.perf_counter() - t_start, 2)
         return RegionResult(candidates=[], diagnostics=diagnostics)
@@ -1246,6 +1393,40 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             hpwl_mm=round(s["elite_obj"].hpwl_mm, 3),
             failed=s["failed"], elite_rank=s["elite"],
             iterations=s["result"].iterations))
+
+    # 6b ── write-time verify (finding §5): re-check every SHIPPED candidate's
+    # pad-copper clearance over its WHOLE moved board, not just the region model.
+    # Elites are pad-clean by construction, so a hit here is copper OUTSIDE the
+    # search's obstacle set (a frozen part the fence did not intrude) — surface
+    # it loudly, never ship a confidently-wrong "0 overlaps". Only pairs
+    # involving a MOVED part are this run's responsibility; a pre-existing tight
+    # spot elsewhere on the board is not, and is filtered out.
+    placement_verify = {"pad_clearance_checked": bool(pad_clearance),
+                        "clean": True, "candidates_with_shorts": 0,
+                        "violations": []}
+    if pad_clearance:
+        for s in scored[:k]:
+            cand, rop = s["board"], s["ref_of_pad"]
+            pads = [(rop[i], p.net_name, frozenset(p.layers), pad_world_corners(p))
+                    for i, p in enumerate(cand.pads)
+                    if p.layers and _pad_has_copper(p)]
+            hits = [{"a": a, "net_a": na, "b": b, "net_b": nb,
+                     "gap_mm": round(g, 4), "clearance_mm": need}
+                    for a, na, b, nb, g, need in
+                    pad_clearance_report(pads, pad_clr_by_name, default_pad_clr)
+                    if a in movable or b in movable]
+            if hits:
+                placement_verify["clean"] = False
+                placement_verify["candidates_with_shorts"] += 1
+                placement_verify["violations"].append(
+                    {"elite": s["elite"], "pairs": hits})
+        if not placement_verify["clean"]:
+            say(f"WARN    pad-clearance verify found copper shorts in "
+                f"{placement_verify['candidates_with_shorts']} shipped "
+                f"candidate(s) — see diagnostics.placement_verify; these are "
+                f"pairs the search's obstacle set did not cover, do NOT apply "
+                f"without inspecting")
+    diagnostics["placement_verify"] = placement_verify
 
     # 7 ── diagnostics that are true (spec's whole feedback loop)
     fully = [s for s in scored[:k] if not s["failed"]]
@@ -1538,6 +1719,14 @@ def _print_summary(result, out_dir):
              if d['boundary_nets'] else ""))
     if len(d['boundary_nets']) > 6:
         print(f"              (+{len(d['boundary_nets']) - 6} more)")
+    dn = d.get("density")
+    if dn:
+        flag = {"impossible": "  IMPOSSIBLE as one fence",
+                "tight": "  tight — expect congestion"}.get(dn["verdict"], "")
+        print(f"density     : {dn['utilization']:.0%} "
+              f"({dn['courtyard_mm2']:.0f} of {dn['fence_mm2']:.0f} mm2"
+              + (f", {dn['blocked_mm2']:.0f} under obstacles"
+                 if dn['blocked_mm2'] > 0.5 else "") + ")" + flag)
     print()
     if not result.candidates:
         print("candidates  : NONE")
@@ -1593,6 +1782,20 @@ def _print_summary(result, out_dir):
               f"{lt['window_mm'][3]:.1f} mm, {lt['window_pads']} pads in "
               f"window, clearance inflate {lt['clearance_inflate_mm']} mm, "
               f"{lt['pad_snap_conflicts']} pad-snap conflict(s)")
+    pv = d.get("placement_verify") or {}
+    if pv.get("pad_clearance_checked"):
+        if pv.get("clean"):
+            print("  pad clearance   : verified clean on every shipped candidate "
+                  "(whole-board pad-copper check)")
+        else:
+            print(f"  pad clearance   : SHORTS in "
+                  f"{pv.get('candidates_with_shorts')} candidate(s) — inspect "
+                  f"before applying")
+            for v in pv.get("violations", [])[:3]:
+                for pr in v["pairs"][:4]:
+                    print(f"      elite {v['elite']}: {pr['a']}({pr['net_a']}) <-> "
+                          f"{pr['b']}({pr['net_b']}) — {pr['gap_mm']} mm < "
+                          f"{pr['clearance_mm']} mm")
     for w in d.get("geometry_warnings") or []:
         print(f"  WARNING         : {w['kind']} on {', '.join(w['refs'])}")
         print(f"                    {w['detail']}")
@@ -1742,6 +1945,11 @@ def main(argv=None):
                     "(default 1.0), where the pad bbox under-models the body "
                     "(relays, connectors); parts WITH a real courtyard are "
                     "untouched. 0 uses the raw pad bbox")
+    ap.add_argument("--no-pad-clearance", action="store_true",
+                    help="disable pad-to-pad copper clearance (on by default, "
+                    "per net class): courtyard non-overlap does not imply it, so "
+                    "a fat pad or an HV creepage rule shorts with clear bodies. "
+                    "Off is A/B measurement only — it ships copper DRC will fail")
     ap.add_argument("--via-weight", type=float, default=VIA_WEIGHT_MM,
                     help="mm of track a via is worth when ranking")
     ap.add_argument("--keep-work", action="store_true",
@@ -1792,6 +2000,7 @@ def main(argv=None):
             respect_positions=args.respect_positions,
             hole_clearance_mm=args.hole_clearance, min_gap_mm=args.min_gap,
             body_margin_mm=args.body_margin,
+            pad_clearance=not args.no_pad_clearance,
             progress=None if args.json else (lambda m: print(m, flush=True)))
     except ValueError as e:
         ap.error(str(e))

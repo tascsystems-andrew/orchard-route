@@ -43,6 +43,12 @@ class Pad:
     through_hole: bool
     drill_mm: float                    # 0.0 for SMD
     rotation_deg: float = 0.0          # total rotation (footprint + pad, KiCad CCW, Y-down)
+    plated: bool = True                # False for np_thru_hole — a bare tooling/
+                                       # mounting hole with NO copper. It is given
+                                       # copper layers here so the router still
+                                       # treats the drill as an obstacle, but it
+                                       # carries no metal a clearance check should
+                                       # see (KiCad's clearance DRC ignores it).
 
 
 @dataclass
@@ -708,7 +714,8 @@ def load_board(path: str) -> Board:
 
             code, name = resolve(_kid(pad, "net"))
             pads.append(Pad(fx + dx, fy + dy, pad_layers, code, name,
-                            w, h, through, drill, prot))
+                            w, h, through, drill, prot,
+                            plated=(ptype != "np_thru_hole")))
 
     tracks = []
     for seg in _kids(root, "segment"):

@@ -177,6 +177,126 @@ def _rect_circle_overlap(rect, cx, cy, r):
     return (nx - cx) ** 2 + (ny - cy) ** 2 < r * r - 1e-12
 
 
+# ── pad-copper geometry (DRC-fidelity pad clearance, feedback/placement-
+#    fidelity-2026-07-20 §2) ─────────────────────────────────────────────────
+#
+# Courtyard non-overlap is an ASSEMBLY halo; it says nothing about where the
+# copper of one pad sits relative to another net's pad. Two parts with clear
+# courtyards can still have individual pads within the net-class clearance (a
+# FET's fat drain pad, a relay's spread pads, an HV creepage rule), and KiCad
+# DRC calls that a short. So the placement model tests pad-to-pad copper
+# clearance between DIFFERENT nets on SHARED copper layers, exactly, using the
+# pad's true rotated rectangle — not an inflated bbox, which would over-reject
+# legal corner adjacencies (a false infeasible is as wrong as a missed short).
+
+def _pad_local_corners(part, pad):
+    """A pad's four corners in the part's LOCAL, UNROTATED frame (origin at the
+    part centre), so applying the part's placement rotation with _rot puts them
+    in world coordinates — the pad-copper analogue of _local_geometry's rect.
+    The pad's own rotation is stored ABSOLUTE (footprint angle folded in), so it
+    is backed out to a footprint-relative angle here and re-composed by _rot at
+    judge time; at the home placement this round-trips to the pad's file rect."""
+    ox, oy = _rot(pad.x_mm - part.x_mm, pad.y_mm - part.y_mm, -part.rot_deg)
+    rel = pad.rotation_deg - part.rot_deg
+    hw, hh = pad.width_mm / 2.0, pad.height_mm / 2.0
+    out = []
+    for sx, sy in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+        dx, dy = _rot(sx * hw, sy * hh, rel)
+        out.append((ox + dx, oy + dy))
+    return out
+
+
+def pad_world_corners(pad):
+    """A pad's four WORLD corners at its current absolute placement (board.Pad
+    coords are already absolute) — for frozen obstacle pads that never move, so
+    region.py can hand a locked/out-of-fence part's copper to the model."""
+    hw, hh = pad.width_mm / 2.0, pad.height_mm / 2.0
+    out = []
+    for sx, sy in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+        dx, dy = _rot(sx * hw, sy * hh, pad.rotation_deg)
+        out.append((pad.x_mm + dx, pad.y_mm + dy))
+    return out
+
+
+def _aabb_of(corners):
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _pad_has_copper(pad):
+    """Whether a pad contributes copper a clearance check must see. A non-plated
+    through-hole (np_thru_hole — a bare tooling/mounting hole) has none, and any
+    through-hole whose pad size does not exceed its drill has no annular ring:
+    KiCad's clearance DRC ignores both. board.py gives these pads all copper
+    layers so the router still treats the drill as an obstacle, but modelling
+    them as SOLID copper for pad clearance would flag a mounting hole as
+    'shorting' a neighbour and refuse a buildable board (adversarial review,
+    2026-07-20). SMD and real annular-ring THT pads always have copper."""
+    if not getattr(pad, "plated", True):
+        return False
+    if pad.through_hole and pad.drill_mm > 0.0 \
+            and max(pad.width_mm, pad.height_mm) <= pad.drill_mm + 1e-9:
+        return False
+    return True
+
+
+def _convex_overlap(a, b):
+    """Separating-axis test for two convex polygons (corner lists). True when
+    no axis separates them — i.e. their interiors intersect. Edge normals need
+    not be normalised for a pure disjoint test."""
+    for poly in (a, b):
+        n = len(poly)
+        for k in range(n):
+            x1, y1 = poly[k]
+            x2, y2 = poly[(k + 1) % n]
+            nx, ny = -(y2 - y1), (x2 - x1)
+            amin = amax = None
+            for px, py in a:
+                dpv = px * nx + py * ny
+                amin = dpv if amin is None else min(amin, dpv)
+                amax = dpv if amax is None else max(amax, dpv)
+            bmin = bmax = None
+            for px, py in b:
+                dpv = px * nx + py * ny
+                bmin = dpv if bmin is None else min(bmin, dpv)
+                bmax = dpv if bmax is None else max(bmax, dpv)
+            if amax < bmin - 1e-12 or bmax < amin - 1e-12:
+                return False
+    return True
+
+
+def _pt_seg_dist2(px, py, ax, ay, bx, by):
+    """Squared distance from a point to a segment."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 <= 1e-18:
+        return (px - ax) ** 2 + (py - ay) ** 2
+    t = ((px - ax) * dx + (py - ay) * dy) / L2
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    cx, cy = ax + t * dx, ay + t * dy
+    return (px - cx) ** 2 + (py - cy) ** 2
+
+
+def _poly_gap(a, b):
+    """Exact Euclidean gap between two convex polygons: 0 if they intersect,
+    else the minimum vertex-to-opposite-edge distance (which, for convex
+    polygons, IS the closest approach). Used for pad-copper clearance, so it
+    must be exact in both directions — a conservative bbox proxy would refuse
+    buildable placements, an optimistic one would ship shorts."""
+    if _convex_overlap(a, b):
+        return 0.0
+    best = math.inf
+    for p, q in ((a, b), (b, a)):
+        m = len(q)
+        for px, py in p:
+            for k in range(m):
+                qx, qy = q[k]
+                rx, ry = q[(k + 1) % m]
+                best = min(best, _pt_seg_dist2(px, py, qx, qy, rx, ry))
+    return math.sqrt(best)
+
+
 def _local_geometry(part, margin_mm, body_margin_mm=0.0):
     """(pad terminals in footprint-local frame, local courtyard rect).
 
@@ -220,6 +340,71 @@ def _local_geometry(part, margin_mm, body_margin_mm=0.0):
     return terms, (lo_x - m, lo_y - m, hi_x + m, hi_y + m)
 
 
+def pad_clearance_report(pads, clr_by_name, default_mm):
+    """Different-net pad-copper clearance breaches over a WHOLE board — the
+    DRC-mirroring post-condition of feedback/placement-fidelity-2026-07-20 §5.
+
+    pads: iterable of (owner_ref, net_name, layers, world_corners). Returns
+    [(refA, netA, refB, netB, gap_mm, need_mm)] for every pair of pads that
+    belong to DIFFERENT footprints and DIFFERENT nets, share a copper layer,
+    and sit closer than max(their two net-class clearances). Same-net and
+    same-footprint pairs are legal and skipped. Broad-phased with a uniform
+    grid sized to the widest clearance, so it scales to a full board; the
+    survivors are measured with the exact _poly_gap. This is the check KiCad
+    runs that courtyard non-overlap never implied (a fat FET pad, an HV creepage
+    rule, a back-side THT pad under a front SMD pad)."""
+    from collections import defaultdict
+    items, max_clr = [], float(default_mm)
+    for ref, net, layers, corners in pads:
+        ly = frozenset(layers)
+        if not ly:
+            continue
+        cor = list(corners)
+        c = clr_by_name.get(net or "", default_mm)
+        max_clr = max(max_clr, c)
+        items.append((ref, net or "", ly, cor, _aabb_of(cor), c))
+    if max_clr <= 0.0 or not items:
+        return []
+    cell = max(max_clr, 1.0)
+    # bucket each pad by its AABB INFLATED by half the widest clearance: two pads
+    # whose true gap is < clearance then have overlapping inflated boxes and are
+    # guaranteed to share a grid cell (without the inflation, a within-clearance
+    # pair one cell apart would never be compared — a silently missed short).
+    h = max_clr / 2.0
+    grid = defaultdict(list)
+    for idx, (_r, _n, _l, _c, ab, _cl) in enumerate(items):
+        for gx in range(int(math.floor((ab[0] - h) / cell)),
+                        int(math.floor((ab[2] + h) / cell)) + 1):
+            for gy in range(int(math.floor((ab[1] - h) / cell)),
+                            int(math.floor((ab[3] + h) / cell)) + 1):
+                grid[(gx, gy)].append(idx)
+    seen, out = set(), []
+    for bucket in grid.values():
+        for u in range(len(bucket)):
+            for v in range(u + 1, len(bucket)):
+                i, j = bucket[u], bucket[v]
+                key = (i, j) if i < j else (j, i)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ri, ni, lyi, cori, abi, ci = items[i]
+                rj, nj, lyj, corj, abj, cj = items[j]
+                if ri == rj:                       # same footprint
+                    continue
+                if ni == nj and ni != "":          # same net may touch
+                    continue
+                if not (lyi & lyj):                # no shared copper layer
+                    continue
+                need = max(ci, cj)
+                if need <= 0.0 or _gap(abi, abj) >= need:
+                    continue
+                g = _poly_gap(cori, corj)
+                if g < need - 1e-9:
+                    out.append((ri, ni, rj, nj, g, need))
+    out.sort(key=lambda t: (t[4], t[0], t[2]))
+    return out
+
+
 def part_courtyard(part, margin_mm=COURTYARD_MARGIN_MM, body_margin_mm=0.0):
     """World courtyard rect of a part AT ITS CURRENT PLACEMENT — the helper
     region.py uses to turn out-of-region footprints into frozen obstacle
@@ -240,7 +425,9 @@ class PlacementModel:
     def __init__(self, parts, region, constraints=(), *, obstacles=(),
                  keepouts=(), fixed_points=None, net_weights=None,
                  margin_mm=COURTYARD_MARGIN_MM, edge_tol_mm=1.0,
-                 penalty_scale_mm=10.0, min_gap_mm=0.0, body_margin_mm=0.0):
+                 penalty_scale_mm=10.0, min_gap_mm=0.0, body_margin_mm=0.0,
+                 pad_clearances=None, default_pad_clearance_mm=0.0,
+                 frozen_pads=()):
         self.parts = list(parts)
         self.refs = [p.ref for p in self.parts]
         if len(set(self.refs)) != len(self.refs):
@@ -273,6 +460,46 @@ class PlacementModel:
         self._geom = [_local_geometry(p, self.margin_mm, self.body_margin_mm)
                       for p in self.parts]
 
+        # pad-copper clearance (feedback/placement-fidelity-2026-07-20 §2).
+        # pad_clearances is {net_name: min copper clearance mm}; None disables
+        # the whole check (the default — old callers and the synthetic anneal
+        # tests are unaffected). Each part's pads are stored as LOCAL corner
+        # quads so a candidate (x, y, rot) maps them with one _rot, exactly like
+        # the courtyard rect. frozen_pads are (net, layers, world_corners) for
+        # obstacle parts that never move (locked / out-of-fence copper).
+        self._pad_check = pad_clearances is not None
+        self._pad_clr = dict(pad_clearances or {})
+        self._pad_clr_default = float(default_pad_clearance_mm)
+        self._padgeom = []
+        for p in self.parts:
+            pg = []
+            for pad in p.pads:
+                layers = frozenset(pad.layers or ())
+                if not layers or not _pad_has_copper(pad):
+                    continue                   # no copper (paste/mask only, or a
+                                               # bare np_thru_hole / no-annulus
+                                               # hole) -> nothing to clear
+                pg.append((pad.net_name or "", layers,
+                           tuple(_pad_local_corners(p, pad))))
+            self._padgeom.append(pg)
+        self._frozen_pads = []
+        for net, layers, corners in (frozen_pads or ()):
+            ly = frozenset(layers)
+            if not ly:
+                continue
+            cs = tuple(corners)
+            self._frozen_pads.append((net or "", ly, cs, _aabb_of(cs)))
+        # broad-phase gate: two parts can only violate if their courtyards (which
+        # ALWAYS contain their pads — _local_geometry floors on the pad bbox) are
+        # closer than the largest clearance any involved net asks for.
+        if self._pad_check:
+            names = {nn for pg in self._padgeom for nn, _l, _c in pg}
+            names |= {nn for nn, _l, _c, _a in self._frozen_pads}
+            vals = [self._pad_clr.get(nn, self._pad_clr_default) for nn in names]
+            self._max_pad_clr = max(vals) if vals else 0.0
+        else:
+            self._max_pad_clr = 0.0
+
         # nets: name -> (weight, [fixed (x, y)], [(part_idx, ox, oy)]);
         # only nets with >= 2 endpoints pull. Sorted for stable float sums.
         weights = dict(net_weights or {})
@@ -300,6 +527,83 @@ class PlacementModel:
     def courtyards(self, states):
         return {r: _world_rect(self._geom[i][1], s[0], s[1], s[2])
                 for i, (r, s) in enumerate(zip(self.refs, states))}
+
+    def _pad_conflicts(self, courts, states):
+        """Pad-copper clearance breaches at a state: different-net pads on a
+        shared copper layer whose true rotated rectangles sit closer than the
+        net-class clearance. One record per offending part-pair (the first pad
+        pair that breaches) — enough for judge()'s hard reject and readable in
+        problems(). Empty when the check is off or nothing breaches.
+
+        The gate is the courtyard proximity already computed by the caller: a
+        courtyard contains its part's pads, so two courtyards farther apart than
+        the widest clearance cannot have pads within it — no missed short, and
+        the exact _poly_gap on the survivors never over-rejects."""
+        if not self._pad_check or self._max_pad_clr <= 0.0:
+            return []
+        d = self._pad_clr_default
+        clr = self._pad_clr
+        world = {}
+
+        def wp(i):
+            w = world.get(i)
+            if w is None:
+                x, y, rot = states[i]
+                w = []
+                for nn, ly, corners in self._padgeom[i]:
+                    w.append((nn, ly, [(x + rx, y + ry) for rx, ry in
+                                       (_rot(cx, cy, rot) for cx, cy in corners)]))
+                world[i] = w
+            return w
+
+        def first_breach(pads_a, pads_b):
+            for na, la, ca in pads_a:
+                for nb, lb, cb in pads_b:
+                    if na == nb and na != "":        # same net may touch
+                        continue
+                    if not (la & lb):                # no shared copper layer
+                        continue
+                    need = max(clr.get(na, d), clr.get(nb, d))
+                    if need <= 0.0:
+                        continue
+                    g = _poly_gap(ca, cb)
+                    if g < need - 1e-9:
+                        return na, nb, need, g
+            return None
+
+        out = []
+        n = len(courts)
+        for i in range(n):
+            if not self._padgeom[i]:
+                continue
+            for j in range(i + 1, n):
+                if not self._padgeom[j]:
+                    continue
+                if _gap(courts[i], courts[j]) >= self._max_pad_clr - 1e-12:
+                    continue
+                hit = first_breach(wp(i), wp(j))
+                if hit:
+                    na, nb, need, g = hit
+                    out.append({"a": self.refs[i], "b": self.refs[j],
+                                "net_a": na, "net_b": nb,
+                                "clearance_mm": need, "gap_mm": g,
+                                "frozen": False})
+        for i in range(n):
+            if not self._padgeom[i]:
+                continue
+            ci = courts[i]
+            for nb, lb, cb, ab in self._frozen_pads:
+                if _gap(ci, ab) >= self._max_pad_clr - 1e-12:
+                    continue
+                hit = first_breach(wp(i), [(nb, lb, cb)])
+                if hit:
+                    na, fnb, need, g = hit
+                    out.append({"a": self.refs[i], "b": "frozen obstacle",
+                                "net_a": na, "net_b": fnb,
+                                "clearance_mm": need, "gap_mm": g,
+                                "frozen": True})
+                    break
+        return out
 
     # -- judgment --
 
@@ -330,6 +634,11 @@ class PlacementModel:
                 if _rect_circle_overlap(courts[i], cx, cy, hr):
                     out.append(f"{self.refs[i]} courtyard sits on a mounting-"
                                f"hole keep-out at ({cx:.2f}, {cy:.2f})")
+        for v in self._pad_conflicts(courts, states):
+            out.append(
+                f"{v['a']} pad (net {v['net_a'] or '<none>'}) and {v['b']} pad "
+                f"(net {v['net_b'] or '<none>'}) are {v['gap_mm']:.3f} mm apart "
+                f"but need {v['clearance_mm']:g} mm copper clearance")
         for c in evaluate_constraints(self.constraints,
                                       self.placements(states),
                                       dict(zip(self.refs, courts)),
@@ -359,6 +668,8 @@ class PlacementModel:
                 if _too_close(r, prev, self.min_gap_mm):
                     return False, math.inf, math.inf, math.inf
             courts.append(r)
+        if self._pad_check and self._pad_conflicts(courts, states):
+            return False, math.inf, math.inf, math.inf
         checks = evaluate_constraints(self.constraints,
                                       self.placements(states),
                                       dict(zip(self.refs, courts)),
@@ -409,7 +720,8 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
                   keepouts=(), fixed_points=None, net_weights=None,
                   grid_mm=0.5, margin_mm=COURTYARD_MARGIN_MM,
                   edge_tol_mm=1.0, penalty_scale_mm=10.0, min_gap_mm=0.0,
-                  body_margin_mm=0.0,
+                  body_margin_mm=0.0, pad_clearances=None,
+                  default_pad_clearance_mm=0.0, frozen_pads=(),
                   seed=0, pool_size=8, sweeps=200, proposals_per_sweep=None,
                   t0=None, cool=0.95, reheat_factor=8.0, stall_sweeps=15):
     """Explore placements of parts inside a region fence; return the elite
@@ -437,7 +749,10 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
                            net_weights=net_weights,
                            margin_mm=margin_mm, edge_tol_mm=edge_tol_mm,
                            penalty_scale_mm=penalty_scale_mm,
-                           min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm)
+                           min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm,
+                           pad_clearances=pad_clearances,
+                           default_pad_clearance_mm=default_pad_clearance_mm,
+                           frozen_pads=frozen_pads)
     rng = random.Random(seed)
     rx, ry, rw, rh = model.region
     g = float(grid_mm)
