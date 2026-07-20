@@ -1,0 +1,41 @@
+returncode 0
+STDOUT tail: 0,
+        "Net-(C28-Pad2)": 1.0,
+        "Net-(C8-Pad2)": 1.0,
+        "Net-(C9-Pad2)": 1.0,
+        "Net-(Q31-S)": 1.0,
+        "Net-(Q32-S)": 1.0,
+        "VMID": 1.0
+      }
+    },
+    "candidates_routed_fully": "1/1",
+    "finalists_routed": 3,
+    "lattice": {
+      "nodes": 72618,
+      "W": 273,
+      "H": 133,
+      "L": 2,
+      "window_mm": [
+        18.0,
+        0.0,
+        134.0,
+        64.0
+      ],
+      "window_pads": 20,
+      "clearance_inflate_mm": 0.325,
+      "degraded_pad_pairs": 0,
+      "pad_snap_conflicts": 4
+    },
+    "runtime_s": 3.94,
+    "work_dir": null
+  }
+}
+
+
+BIG parts placed: 10/10  |  overlapping pairs among them: 6
+     57.8mm2  C72 x C47
+     25.0mm2  C31 x C9
+     17.9mm2  C16 x C8
+     17.7mm2  R174 x R175
+      8.0mm2  C72 x C13
+      3.6mm2  C72 x C9
