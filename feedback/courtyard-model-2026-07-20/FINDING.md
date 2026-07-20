@@ -109,3 +109,44 @@ Hand-anchor the ~21 THT bodies (positions computed against the real courtyard), 
 them, let `region.py` place only the well-modeled small parts, then a real-courtyard census
 nudges any residual small-on-body overlaps out. It is a band-aid — frozen bodies are
 under-modeled too — but it unblocks the Voxy layout while the fix lands.
+
+---
+
+# Two more placement-model gaps (found adopting the Voxy board into KiCad, 2026-07-20)
+
+Both surfaced when Andrew opened the placed board in KiCad and hit DRC. They're small and
+belong with the courtyard fix — same geometric model.
+
+## A. Mounting holes are not keep-outs — parts get placed over them
+
+`region.py` places parts on top of board mounting holes. The Voxy board carries **22 holes**
+as `gr_circle`s on `Edge.Cuts` (+ a couple on a `User` layer): 6 × M3 (Ø3.2, board corners
++ two mid-board) and a 16-hole Ø2.6 grid every 26 mm along the long edges. Nothing in the
+placement model reads them, so courtyards landed squarely on several — and a mounting hole
+needs **screw-head clearance**, not just the drill kept clear.
+
+**Ask:** parse hole features (`gr_circle` on `Edge.Cuts`, pad/footprint holes, and
+`MountingHole*` footprints) into the placement as circular keep-outs, each inflated by a
+configurable **screw-head clearance** (Andrew's rule of thumb: hole-edge + 3 mm for M3).
+Feasibility rejects any movable courtyard intersecting a keep-out; the anneal treats them as
+fixed obstacles. Same mechanism as the fence edge, just circular. (Workaround today: I parse
+the `gr_circle`s myself and nudge parts of the keep-outs — `step4_refine.py`.)
+
+## B. "No overlap" isn't enough — placement needs a real clearance GAP
+
+The model (and my own census) treated **touching courtyards as legal**. But the courtyard
+already encodes the part's own margin, so two courtyards that abut = two parts with *zero*
+clearance between them, which KiCad DRC flags. On Voxy this shipped C28/C31 with a 0.2 mm
+gap and C9/C16 actually 0.3 mm² overlapping (the latter slipped a `> 0.5 mm²` threshold in my
+checker — a second bug worth calling out: **overlap thresholds should be ~0, not 0.5**).
+
+**Ask:** enforce a **minimum inter-courtyard gap** (configurable, e.g. 0.25–0.3 mm) in both
+the hard-feasibility test and the anneal energy — i.e. reject when
+`gap(courtyard_i, courtyard_j) < min_gap`, not just when they overlap. And in diagnostics,
+report the *closest-approach gap* between the nearest pair, not just overlap area, so
+near-crashes are visible before DRC. (Workaround today: inflate every courtyard by
+`min_gap/2` per side before the overlap test — `step4_refine.py`.)
+
+Both compose with the courtyard fix above: once keep-outs use the real `F.CrtYd` and holes,
+a min-gap constraint makes the placed board DRC-clean on courtyard + hole clearance directly,
+no post-nudge.
