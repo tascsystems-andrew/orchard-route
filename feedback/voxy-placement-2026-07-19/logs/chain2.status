@@ -1,0 +1,10 @@
+BAND bandA exit=1
+BAND bandA FAILED
+BAND bandB exit=0
+BAND bandC exit=1
+BAND bandC FAILED
+BAND bandD exit=1
+BAND bandD FAILED
+BAND bandE exit=1
+BAND bandE FAILED
+CHAIN2_DONE final=/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandB_v2/cand-1.kicad_pcb

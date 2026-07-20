@@ -1,0 +1,605 @@
+{
+  "candidates": [],
+  "diagnostics": {
+    "region": [
+      252.95,
+      -0.25,
+      47.3,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 0,
+    "movable": [
+      "C104",
+      "C36",
+      "C37",
+      "C38",
+      "C39",
+      "C40",
+      "C41",
+      "C42",
+      "C64",
+      "C65",
+      "C66",
+      "C67",
+      "C68",
+      "C69",
+      "C70",
+      "C71",
+      "C72",
+      "C73",
+      "C74",
+      "C75",
+      "C76",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "J4",
+      "Pri-A1",
+      "Pri-B1",
+      "Pri-CT1",
+      "Q31",
+      "Q32",
+      "Q5",
+      "Q6",
+      "Q7",
+      "Q8",
+      "R100",
+      "R101",
+      "R102",
+      "R103",
+      "R104",
+      "R105",
+      "R159",
+      "R160",
+      "R161",
+      "R162",
+      "R163",
+      "R164",
+      "R165",
+      "R166",
+      "R167",
+      "R168",
+      "R169",
+      "R170",
+      "R171",
+      "R172",
+      "R173",
+      "R174",
+      "R175",
+      "R176",
+      "R177",
+      "R178",
+      "R179",
+      "R203",
+      "R204",
+      "R205",
+      "R206",
+      "R211",
+      "R212",
+      "R94",
+      "R95",
+      "R96",
+      "R97",
+      "R98",
+      "R99",
+      "RV1",
+      "Spkr+1",
+      "Spkr-1",
+      "U19",
+      "U4",
+      "U5",
+      "VOLa4",
+      "VOLa5",
+      "VOLb4",
+      "VOLb5"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [],
+    "seeded": [
+      {
+        "ref": "C104",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.95,
+          6.25
+        ],
+        "distance_mm": 257.026,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C36",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          273.95,
+          6.25
+        ],
+        "distance_mm": 274.021,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C38",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.95,
+          19.25
+        ],
+        "distance_mm": 257.67,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C41",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          265.95,
+          19.25
+        ],
+        "distance_mm": 266.646,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C42",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          273.95,
+          19.25
+        ],
+        "distance_mm": 274.625,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C64",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          282.95,
+          19.25
+        ],
+        "distance_mm": 283.604,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C65",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          290.95,
+          19.25
+        ],
+        "distance_mm": 291.586,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C66",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.95,
+          32.25
+        ],
+        "distance_mm": 258.966,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C67",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.95,
+          45.25
+        ],
+        "distance_mm": 260.904,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C68",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          273.95,
+          45.25
+        ],
+        "distance_mm": 277.662,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C69",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          282.95,
+          45.25
+        ],
+        "distance_mm": 286.545,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C70",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          290.95,
+          45.25
+        ],
+        "distance_mm": 294.448,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C71",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.95,
+          58.25
+        ],
+        "distance_mm": 263.47,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C72",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          265.95,
+          58.25
+        ],
+        "distance_mm": 272.254,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C73",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          273.95,
+          58.25
+        ],
+        "distance_mm": 280.074,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C74",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          282.95,
+          58.25
+        ],
+        "distance_mm": 288.884,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C75",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          290.95,
+          58.25
+        ],
+        "distance_mm": 296.724,
+        "displaces_movable": 0
+      }
+    ],
+    "boundary_nets": [
+      {
+        "net_code": 1,
+        "net_name": "+24v",
+        "x_mm": 252.95,
+        "y_mm": 10.98,
+        "side": "left",
+        "from_ref": "EQBuffer1",
+        "from_xy": [
+          213.92,
+          10.98
+        ],
+        "distance_mm": 39.03
+      },
+      {
+        "net_code": 2,
+        "net_name": "+3.3v",
+        "x_mm": 252.95,
+        "y_mm": 8.462499999999999,
+        "side": "left",
+        "from_ref": "LEDEQ1",
+        "from_xy": [
+          218.51500000000001,
+          8.462499999999999
+        ],
+        "distance_mm": 34.434999999999974
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 252.95,
+        "y_mm": 38.670001,
+        "side": "left",
+        "from_ref": "NFBb3",
+        "from_xy": [
+          185.900001,
+          38.670001
+        ],
+        "distance_mm": 67.04999899999999
+      },
+      {
+        "net_code": 16,
+        "net_name": "B+",
+        "x_mm": 252.95,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "Q11",
+        "from_xy": [
+          0.74,
+          0.0
+        ],
+        "distance_mm": 252.20999999999998
+      },
+      {
+        "net_code": 67,
+        "net_name": "FX Return",
+        "x_mm": 252.95,
+        "y_mm": 24.75,
+        "side": "left",
+        "from_ref": "FXT1",
+        "from_xy": [
+          137.15,
+          24.75
+        ],
+        "distance_mm": 115.79999999999998
+      },
+      {
+        "net_code": 68,
+        "net_name": "FX Send",
+        "x_mm": 252.95,
+        "y_mm": 31.75,
+        "side": "left",
+        "from_ref": "FXT1",
+        "from_xy": [
+          137.15,
+          31.75
+        ],
+        "distance_mm": 115.79999999999998
+      },
+      {
+        "net_code": 72,
+        "net_name": "GND-5",
+        "x_mm": 252.95,
+        "y_mm": 8.4625,
+        "side": "left",
+        "from_ref": "LEDEQ1",
+        "from_xy": [
+          226.315,
+          8.4625
+        ],
+        "distance_mm": 26.63499999999999
+      },
+      {
+        "net_code": 73,
+        "net_name": "GND-B",
+        "x_mm": 252.95,
+        "y_mm": 54.13,
+        "side": "left",
+        "from_ref": "VOLb3",
+        "from_xy": [
+          145.85,
+          54.13
+        ],
+        "distance_mm": 107.1
+      },
+      {
+        "net_code": 90,
+        "net_name": "Input PI",
+        "x_mm": 252.95,
+        "y_mm": 22.35,
+        "side": "left",
+        "from_ref": "StageT2",
+        "from_xy": [
+          98.85,
+          22.35
+        ],
+        "distance_mm": 154.1
+      },
+      {
+        "net_code": 314,
+        "net_name": "Net-(R114-Pad2)",
+        "x_mm": 252.95,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "R114",
+        "from_xy": [
+          1.4625,
+          0.0
+        ],
+        "distance_mm": 251.48749999999998
+      },
+      {
+        "net_code": 315,
+        "net_name": "Net-(R115-Pad2)",
+        "x_mm": 252.95,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "R115",
+        "from_xy": [
+          1.4625,
+          0.0
+        ],
+        "distance_mm": 251.48749999999998
+      },
+      {
+        "net_code": 376,
+        "net_name": "Return Bot FX",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "LEDGLOBAL1",
+        "from_xy": [
+          553.212,
+          -51.068
+        ],
+        "distance_mm": 258.01597347451184
+      },
+      {
+        "net_code": 377,
+        "net_name": "Return Top FX",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "LEDGLOBAL1",
+        "from_xy": [
+          553.212,
+          -51.717999999999996
+        ],
+        "distance_mm": 258.1447819887127
+      },
+      {
+        "net_code": 378,
+        "net_name": "SCL_Control",
+        "x_mm": 252.95,
+        "y_mm": 15.375,
+        "side": "left",
+        "from_ref": "GPIOPENTODE1",
+        "from_xy": [
+          191.13,
+          15.375
+        ],
+        "distance_mm": 61.81999999999999
+      },
+      {
+        "net_code": 380,
+        "net_name": "SDA_Control",
+        "x_mm": 252.95,
+        "y_mm": 16.025000000000002,
+        "side": "left",
+        "from_ref": "GPIOPENTODE1",
+        "from_xy": [
+          191.13,
+          16.025000000000002
+        ],
+        "distance_mm": 61.81999999999999
+      },
+      {
+        "net_code": 388,
+        "net_name": "Send Bot FX",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "LEDGLOBAL1",
+        "from_xy": [
+          553.212,
+          -52.368
+        ],
+        "distance_mm": 258.27516211978264
+      },
+      {
+        "net_code": 389,
+        "net_name": "Send Top FX",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "LEDGLOBAL1",
+        "from_xy": [
+          553.212,
+          -53.018
+        ],
+        "distance_mm": 258.4071114888288
+      },
+      {
+        "net_code": 414,
+        "net_name": "VMID",
+        "x_mm": 252.95,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "C47",
+        "from_xy": [
+          0.0,
+          0.0
+        ],
+        "distance_mm": 252.95
+      }
+    ],
+    "fixed_inside_nets": [],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": "no feasible starting placement found in the region \u2014 C39 courtyard leaves the region fence; Q7 courtyard leaves the region fence; R174 courtyard leaves the region fence; R175 courtyard leaves the region fence; U19 courtyard leaves the region fence; R169 and R178 courtyards overlap",
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "left",
+      "mm": 12.0,
+      "pressure": {
+        "left": 14.0,
+        "right": 4.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
+      "reason": "no feasible placement exists yet \u2014 fix the reason above before reading anything into this direction"
+    },
+    "preflight": [],
+    "runtime_s": 1.53
+  }
+}

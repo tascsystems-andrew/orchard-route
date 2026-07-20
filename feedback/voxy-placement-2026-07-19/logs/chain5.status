@@ -1,0 +1,11 @@
+WAVE bandAW1 ok seed=1
+WAVE bandAW2 FAILED all seeds
+WAVE bandBW1 ok seed=1
+WAVE bandBW2 ok seed=1
+WAVE bandCW1 ok seed=1
+WAVE bandCW2 ok seed=3
+WAVE bandDW1 ok seed=1
+WAVE bandDW2 FAILED all seeds
+WAVE bandEW1 ok seed=1
+WAVE bandEW2 FAILED all seeds
+CHAIN5_DONE final=/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandEW1_s1/cand-1.kicad_pcb

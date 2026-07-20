@@ -1,0 +1,1257 @@
+{
+  "candidates": [
+    {
+      "id": 1,
+      "placements": {
+        "R105": [
+          278.95,
+          12.25,
+          270.0
+        ],
+        "R159": [
+          287.45,
+          8.75,
+          90.0
+        ],
+        "R160": [
+          286.45,
+          14.25,
+          270.0
+        ],
+        "R161": [
+          255.45,
+          13.25,
+          90.0
+        ],
+        "R162": [
+          266.45,
+          2.75,
+          180.0
+        ],
+        "R163": [
+          293.45,
+          17.75,
+          0.0
+        ],
+        "R164": [
+          275.45,
+          11.75,
+          90.0
+        ],
+        "R165": [
+          272.45,
+          22.75,
+          270.0
+        ],
+        "R166": [
+          267.45,
+          37.75,
+          180.0
+        ],
+        "R167": [
+          267.45,
+          10.75,
+          0.0
+        ],
+        "R168": [
+          291.45,
+          64.75,
+          180.0
+        ],
+        "R169": [
+          297.45,
+          67.25,
+          0.0
+        ],
+        "R170": [
+          281.95,
+          49.75,
+          90.0
+        ],
+        "R171": [
+          266.95,
+          64.75,
+          0.0
+        ],
+        "R172": [
+          271.45,
+          2.75,
+          0.0
+        ],
+        "R173": [
+          276.45,
+          61.25,
+          270.0
+        ],
+        "R176": [
+          265.95,
+          68.75,
+          0.0
+        ],
+        "R177": [
+          277.95,
+          49.75,
+          0.0
+        ],
+        "R178": [
+          298.45,
+          51.75,
+          90.0
+        ],
+        "R179": [
+          254.95,
+          48.75,
+          180.0
+        ],
+        "R203": [
+          291.95,
+          23.25,
+          90.0
+        ],
+        "R204": [
+          289.95,
+          67.75,
+          270.0
+        ],
+        "R205": [
+          281.45,
+          53.25,
+          90.0
+        ],
+        "R206": [
+          287.95,
+          31.75,
+          180.0
+        ],
+        "R211": [
+          262.95,
+          58.25,
+          0.0
+        ],
+        "R212": [
+          260.95,
+          24.25,
+          0.0
+        ],
+        "R94": [
+          271.45,
+          31.75,
+          0.0
+        ],
+        "R95": [
+          291.95,
+          38.75,
+          90.0
+        ],
+        "R96": [
+          287.45,
+          57.75,
+          180.0
+        ],
+        "R97": [
+          295.95,
+          21.75,
+          180.0
+        ],
+        "R98": [
+          291.45,
+          59.25,
+          180.0
+        ],
+        "R99": [
+          277.95,
+          25.25,
+          270.0
+        ],
+        "Spkr+1": [
+          292.45,
+          61.25,
+          0.0
+        ],
+        "Spkr-1": [
+          296.45,
+          45.75,
+          90.0
+        ],
+        "U5": [
+          275.95,
+          56.25,
+          180.0
+        ]
+      },
+      "routed": "42/42",
+      "nets_ok": 42,
+      "nets_total": 42,
+      "wirelength_mm": 2248.986,
+      "vias": 120,
+      "constraint_violations": [],
+      "score": 2488.986,
+      "board_copy": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandEW2b.h2_s1/cand-1.kicad_pcb",
+      "svg": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandEW2b.h2_s1/cand-1.svg",
+      "hpwl_mm": 1997.582,
+      "failed": [],
+      "elite_rank": 0,
+      "iterations": 12
+    },
+    {
+      "id": 2,
+      "placements": {
+        "R105": [
+          278.95,
+          12.25,
+          270.0
+        ],
+        "R159": [
+          287.45,
+          8.75,
+          90.0
+        ],
+        "R160": [
+          286.45,
+          14.25,
+          270.0
+        ],
+        "R161": [
+          255.45,
+          13.25,
+          90.0
+        ],
+        "R162": [
+          266.45,
+          2.75,
+          180.0
+        ],
+        "R163": [
+          293.45,
+          17.75,
+          0.0
+        ],
+        "R164": [
+          275.45,
+          11.75,
+          90.0
+        ],
+        "R165": [
+          272.45,
+          22.75,
+          270.0
+        ],
+        "R166": [
+          267.45,
+          37.75,
+          180.0
+        ],
+        "R167": [
+          270.95,
+          10.25,
+          180.0
+        ],
+        "R168": [
+          291.45,
+          64.75,
+          180.0
+        ],
+        "R169": [
+          297.95,
+          65.25,
+          0.0
+        ],
+        "R170": [
+          281.95,
+          49.75,
+          90.0
+        ],
+        "R171": [
+          266.95,
+          64.75,
+          0.0
+        ],
+        "R172": [
+          271.45,
+          2.75,
+          0.0
+        ],
+        "R173": [
+          276.45,
+          61.25,
+          270.0
+        ],
+        "R176": [
+          265.95,
+          68.75,
+          0.0
+        ],
+        "R177": [
+          278.95,
+          50.25,
+          0.0
+        ],
+        "R178": [
+          298.45,
+          51.75,
+          90.0
+        ],
+        "R179": [
+          254.95,
+          48.75,
+          180.0
+        ],
+        "R203": [
+          291.95,
+          23.25,
+          90.0
+        ],
+        "R204": [
+          293.45,
+          68.25,
+          270.0
+        ],
+        "R205": [
+          281.45,
+          53.25,
+          90.0
+        ],
+        "R206": [
+          287.95,
+          31.75,
+          180.0
+        ],
+        "R211": [
+          262.95,
+          58.25,
+          0.0
+        ],
+        "R212": [
+          260.95,
+          24.25,
+          0.0
+        ],
+        "R94": [
+          271.45,
+          31.75,
+          0.0
+        ],
+        "R95": [
+          291.95,
+          38.75,
+          90.0
+        ],
+        "R96": [
+          285.45,
+          59.25,
+          180.0
+        ],
+        "R97": [
+          295.95,
+          21.75,
+          180.0
+        ],
+        "R98": [
+          291.45,
+          59.25,
+          180.0
+        ],
+        "R99": [
+          277.95,
+          25.25,
+          270.0
+        ],
+        "Spkr+1": [
+          295.45,
+          62.75,
+          0.0
+        ],
+        "Spkr-1": [
+          290.45,
+          43.25,
+          90.0
+        ],
+        "U5": [
+          275.95,
+          56.25,
+          180.0
+        ]
+      },
+      "routed": "42/42",
+      "nets_ok": 42,
+      "nets_total": 42,
+      "wirelength_mm": 2241.407,
+      "vias": 126,
+      "constraint_violations": [],
+      "score": 2493.407,
+      "board_copy": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandEW2b.h2_s1/cand-2.kicad_pcb",
+      "svg": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandEW2b.h2_s1/cand-2.svg",
+      "hpwl_mm": 2007.119,
+      "failed": [],
+      "elite_rank": 4,
+      "iterations": 12
+    }
+  ],
+  "diagnostics": {
+    "region": [
+      252.95,
+      -0.25,
+      47.3,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 1,
+    "movable": [
+      "R105",
+      "R159",
+      "R160",
+      "R161",
+      "R162",
+      "R163",
+      "R164",
+      "R165",
+      "R166",
+      "R167",
+      "R168",
+      "R169",
+      "R170",
+      "R171",
+      "R172",
+      "R173",
+      "R176",
+      "R177",
+      "R178",
+      "R179",
+      "R203",
+      "R204",
+      "R205",
+      "R206",
+      "R211",
+      "R212",
+      "R94",
+      "R95",
+      "R96",
+      "R97",
+      "R98",
+      "R99",
+      "Spkr+1",
+      "Spkr-1",
+      "U5"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [
+      "C104",
+      "C36",
+      "C37",
+      "C38",
+      "C39",
+      "C40",
+      "C41",
+      "C42",
+      "C64",
+      "C65",
+      "C66",
+      "C67",
+      "C68",
+      "C69",
+      "C70",
+      "C71",
+      "C72",
+      "C73",
+      "C74",
+      "C75",
+      "C76",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "J4",
+      "Pri-A1",
+      "Pri-B1",
+      "Pri-CT1",
+      "Q31",
+      "Q32",
+      "Q5",
+      "Q6",
+      "Q7",
+      "Q8",
+      "R100",
+      "R101",
+      "R102",
+      "R103",
+      "R104",
+      "R174",
+      "R175",
+      "RV1",
+      "U19",
+      "U4",
+      "VOLa4",
+      "VOLa5",
+      "VOLb4",
+      "VOLb5"
+    ],
+    "seeded": [
+      {
+        "ref": "R105",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          1.75
+        ],
+        "distance_mm": 270.456,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R159",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.45,
+          33.75
+        ],
+        "distance_mm": 258.661,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R160",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          1.75
+        ],
+        "distance_mm": 277.456,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R161",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          9.75
+        ],
+        "distance_mm": 270.626,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R162",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          9.75
+        ],
+        "distance_mm": 277.621,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R163",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          13.75
+        ],
+        "distance_mm": 270.799,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R164",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          13.75
+        ],
+        "distance_mm": 277.791,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R165",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          21.75
+        ],
+        "distance_mm": 278.301,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R166",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          25.75
+        ],
+        "distance_mm": 278.642,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R167",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          25.75
+        ],
+        "distance_mm": 292.585,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R168",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          33.75
+        ],
+        "distance_mm": 272.548,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R169",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          37.75
+        ],
+        "distance_mm": 266.141,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R170",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          33.75
+        ],
+        "distance_mm": 293.398,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R171",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          256.45,
+          37.75
+        ],
+        "distance_mm": 259.214,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R172",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          37.75
+        ],
+        "distance_mm": 273.072,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R173",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          37.75
+        ],
+        "distance_mm": 293.885,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R176",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          61.75
+        ],
+        "distance_mm": 297.92,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R177",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          41.75
+        ],
+        "distance_mm": 266.738,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R178",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          270.45,
+          65.75
+        ],
+        "distance_mm": 278.328,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R179",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          41.75
+        ],
+        "distance_mm": 294.425,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R203",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          45.75
+        ],
+        "distance_mm": 295.019,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R204",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          49.75
+        ],
+        "distance_mm": 281.875,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R205",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          284.45,
+          49.75
+        ],
+        "distance_mm": 288.768,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R206",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          53.75
+        ],
+        "distance_mm": 282.609,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R211",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          57.75
+        ],
+        "distance_mm": 269.705,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R212",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          65.75
+        ],
+        "distance_mm": 271.531,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R94",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          13.75
+        ],
+        "distance_mm": 263.809,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R95",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          65.75
+        ],
+        "distance_mm": 285.134,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R96",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          284.45,
+          65.75
+        ],
+        "distance_mm": 291.95,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R97",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          13.75
+        ],
+        "distance_mm": 291.774,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R98",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          17.75
+        ],
+        "distance_mm": 291.99,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R99",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          263.45,
+          45.75
+        ],
+        "distance_mm": 267.393,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Spkr+1",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          277.45,
+          57.75
+        ],
+        "distance_mm": 283.396,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Spkr-1",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          284.45,
+          57.75
+        ],
+        "distance_mm": 290.253,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "U5",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          291.45,
+          65.75
+        ],
+        "distance_mm": 298.774,
+        "displaces_movable": 0
+      }
+    ],
+    "boundary_nets": [
+      {
+        "net_code": 1,
+        "net_name": "+24v",
+        "x_mm": 252.95,
+        "y_mm": 0.7500000000000004,
+        "side": "left",
+        "from_ref": "EQBuffer1",
+        "from_xy": [
+          215.45000000000002,
+          0.7500000000000004
+        ],
+        "distance_mm": 37.49999999999997
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 252.95,
+        "y_mm": 51.075,
+        "side": "left",
+        "from_ref": "R155",
+        "from_xy": [
+          252.15,
+          51.075
+        ],
+        "distance_mm": 0.799999999999983
+      },
+      {
+        "net_code": 16,
+        "net_name": "B+",
+        "x_mm": 252.95,
+        "y_mm": 57.25,
+        "side": "left",
+        "from_ref": "Q19",
+        "from_xy": [
+          239.1,
+          57.25
+        ],
+        "distance_mm": 13.849999999999994
+      },
+      {
+        "net_code": 72,
+        "net_name": "GND-5",
+        "x_mm": 252.95,
+        "y_mm": 2.25,
+        "side": "left",
+        "from_ref": "C63",
+        "from_xy": [
+          249.875,
+          2.25
+        ],
+        "distance_mm": 3.0749999999999886
+      },
+      {
+        "net_code": 73,
+        "net_name": "GND-B",
+        "x_mm": 252.95,
+        "y_mm": 44.2125,
+        "side": "left",
+        "from_ref": "R208",
+        "from_xy": [
+          251.65,
+          44.2125
+        ],
+        "distance_mm": 1.299999999999983
+      },
+      {
+        "net_code": 90,
+        "net_name": "Input PI",
+        "x_mm": 252.95,
+        "y_mm": 45.85,
+        "side": "left",
+        "from_ref": "StageT2",
+        "from_xy": [
+          75.85,
+          45.85
+        ],
+        "distance_mm": 177.1
+      },
+      {
+        "net_code": 314,
+        "net_name": "Net-(R114-Pad2)",
+        "x_mm": 252.95,
+        "y_mm": 46.75,
+        "side": "left",
+        "from_ref": "R114",
+        "from_xy": [
+          220.6125,
+          46.75
+        ],
+        "distance_mm": 32.33749999999998
+      },
+      {
+        "net_code": 315,
+        "net_name": "Net-(R115-Pad2)",
+        "x_mm": 252.95,
+        "y_mm": 18.25,
+        "side": "left",
+        "from_ref": "R115",
+        "from_xy": [
+          245.6875,
+          18.25
+        ],
+        "distance_mm": 7.262499999999989
+      },
+      {
+        "net_code": 388,
+        "net_name": "Send Bot FX",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "LEDGLOBAL1",
+        "from_xy": [
+          553.212,
+          -52.368
+        ],
+        "distance_mm": 258.27516211978264
+      },
+      {
+        "net_code": 414,
+        "net_name": "VMID",
+        "x_mm": 252.95,
+        "y_mm": 18.25,
+        "side": "left",
+        "from_ref": "R115",
+        "from_xy": [
+          248.6125,
+          18.25
+        ],
+        "distance_mm": 4.337499999999977
+      }
+    ],
+    "fixed_inside_nets": [
+      "+5v",
+      "B+",
+      "Bias Level PA1",
+      "Bias Level PA2",
+      "Bias Output PA1",
+      "Bias Output PA2",
+      "FB",
+      "GND-5",
+      "GND-B",
+      "Input PA1",
+      "Input PA2",
+      "Net-(C36-Pad2)",
+      "Net-(C37-Pad2)",
+      "Net-(C66-Pad1)",
+      "Net-(C75-Pad2)",
+      "Net-(C76-Pad2)",
+      "Net-(D4-K)",
+      "Net-(Q31-G)",
+      "Net-(Q32-G)",
+      "Net-(Q5-G)",
+      "Net-(Q5-S)",
+      "Net-(Q6-G)",
+      "Net-(Q7-G)",
+      "Net-(U4A-+)",
+      "Net-(U4A--)",
+      "Net-(U4B--)",
+      "Net-(VOLb5--)",
+      "PA+",
+      "VMID-PA"
+    ],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": null,
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "left",
+      "mm": 12.0,
+      "pressure": {
+        "left": 11.0,
+        "right": 5.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
+      "reason": "11 of 16 pressure counts are on the left side (boundary terminals + courtyards within 1.00 mm of the fence)"
+    },
+    "preflight": [],
+    "anneal": {
+      "elites": 6,
+      "sweeps": 200,
+      "proposals": 105000,
+      "accepted": 29244,
+      "rejected_infeasible": 75042,
+      "reheats": 11,
+      "initial_energy": 2241.249,
+      "repaired_start": false,
+      "grid_mm": 0.5,
+      "courtyard_margin_mm": 0.25,
+      "best_energy": 1997.582
+    },
+    "stripped_tracks": {
+      "inside_fence": 428,
+      "crossing_fence": 3
+    },
+    "net_classes": {
+      "project": null,
+      "width_capped_nets": [],
+      "clearance_mm": 0.2,
+      "track_width_mm": 0.25,
+      "weights": {
+        "+24v": 1.0,
+        "+5v": 1.0,
+        "B+": 1.0,
+        "Bias Level PA1": 1.0,
+        "Bias Level PA2": 1.0,
+        "Bias Output PA1": 1.0,
+        "Bias Output PA2": 1.0,
+        "FB": 1.0,
+        "GND-5": 1.0,
+        "GND-B": 1.0,
+        "Input PA1": 1.0,
+        "Input PA2": 1.0,
+        "Input PI": 1.0,
+        "Net-(C36-Pad2)": 1.0,
+        "Net-(C37-Pad2)": 1.0,
+        "Net-(C66-Pad1)": 1.0,
+        "Net-(C75-Pad2)": 1.0,
+        "Net-(C76-Pad2)": 1.0,
+        "Net-(D4-K)": 1.0,
+        "Net-(Q31-G)": 1.0,
+        "Net-(Q32-G)": 1.0,
+        "Net-(Q5-G)": 1.0,
+        "Net-(Q5-S)": 1.0,
+        "Net-(Q6-G)": 1.0,
+        "Net-(Q7-G)": 1.0,
+        "Net-(R114-Pad2)": 1.0,
+        "Net-(R115-Pad2)": 1.0,
+        "Net-(R168-Pad2)": 1.0,
+        "Net-(R169-Pad1)": 1.0,
+        "Net-(R170-Pad1)": 1.0,
+        "Net-(R171-Pad1)": 1.0,
+        "Net-(U4A-+)": 1.0,
+        "Net-(U4A--)": 1.0,
+        "Net-(U4B--)": 1.0,
+        "Net-(U5A--)": 1.0,
+        "Net-(U5B--)": 1.0,
+        "Net-(VOLb5--)": 1.0,
+        "PA+": 1.0,
+        "Send Bot FX": 1.0,
+        "Speaker +": 1.0,
+        "VMID": 1.0,
+        "VMID-PA": 1.0
+      }
+    },
+    "candidates_routed_fully": "2/2",
+    "finalists_routed": 6,
+    "lattice": {
+      "nodes": 33912,
+      "W": 108,
+      "H": 157,
+      "L": 2,
+      "window_mm": [
+        250.95,
+        -2.25,
+        51.3,
+        76.0
+      ],
+      "window_pads": 220,
+      "clearance_inflate_mm": 0.325,
+      "degraded_pad_pairs": 37,
+      "pad_snap_conflicts": 1
+    },
+    "runtime_s": 23.74,
+    "work_dir": null
+  }
+}

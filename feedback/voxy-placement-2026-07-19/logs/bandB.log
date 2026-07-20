@@ -1,0 +1,597 @@
+{
+  "candidates": [],
+  "diagnostics": {
+    "region": [
+      70.25,
+      -0.25,
+      60.0,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 0,
+    "movable": [
+      "ACPLATE3",
+      "ADCP1",
+      "B+1",
+      "C+1",
+      "C27",
+      "C28",
+      "C29",
+      "C30",
+      "C31",
+      "C32",
+      "C33",
+      "C34",
+      "C35",
+      "CCS3",
+      "D+1",
+      "D1",
+      "G1",
+      "G1P1",
+      "G2",
+      "G2P1",
+      "G3",
+      "G4",
+      "G5",
+      "G6",
+      "G7",
+      "G8",
+      "GPIOPENTODE1",
+      "GstopP1",
+      "KBC1P1",
+      "KBC2P1",
+      "KBC3P1",
+      "KP1",
+      "Kbias3",
+      "Kbyp1P1",
+      "Kbyp2P1",
+      "Kbyp3P1",
+      "KbypenP1",
+      "LEDP1",
+      "NFBa3",
+      "NFBb3",
+      "OUTDRIVERP1",
+      "P1LDRScreen1",
+      "P1LDRts1",
+      "PP1",
+      "Q4",
+      "R18",
+      "R215",
+      "R71",
+      "R72",
+      "R73",
+      "R74",
+      "R75",
+      "R76",
+      "R77",
+      "R78",
+      "R79",
+      "R80",
+      "R81",
+      "R82",
+      "R83",
+      "R84",
+      "R85",
+      "R86",
+      "R87",
+      "R88",
+      "R89",
+      "R90",
+      "R91",
+      "R92",
+      "R93"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [],
+    "seeded": [
+      {
+        "ref": "ACPLATE3",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          437.334,
+          47.266
+        ],
+        "to": [
+          83.25,
+          5.75
+        ],
+        "distance_mm": 356.51,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "ADCP1",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          436.555,
+          -100.823
+        ],
+        "to": [
+          109.25,
+          5.75
+        ],
+        "distance_mm": 344.218,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "B+1",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          567.135,
+          -52.333
+        ],
+        "to": [
+          83.25,
+          18.75
+        ],
+        "distance_mm": 489.078,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C+1",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          565.735,
+          -45.123
+        ],
+        "to": [
+          109.25,
+          18.75
+        ],
+        "distance_mm": 460.932,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C27",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          365.844,
+          -60.163
+        ],
+        "to": [
+          83.25,
+          30.75
+        ],
+        "distance_mm": 296.858,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C28",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          386.445,
+          -18.288
+        ],
+        "to": [
+          83.25,
+          43.75
+        ],
+        "distance_mm": 309.477,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C29",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          364.5,
+          -53.813
+        ],
+        "to": [
+          109.25,
+          30.75
+        ],
+        "distance_mm": 268.893,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C30",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          405.7,
+          -71.323
+        ],
+        "to": [
+          109.25,
+          43.75
+        ],
+        "distance_mm": 318.001,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C31",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          401.394,
+          -92.223
+        ],
+        "to": [
+          83.25,
+          55.75
+        ],
+        "distance_mm": 350.873,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C32",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          405.7,
+          -65.473
+        ],
+        "to": [
+          109.25,
+          55.75
+        ],
+        "distance_mm": 320.277,
+        "displaces_movable": 0
+      }
+    ],
+    "boundary_nets": [
+      {
+        "net_code": 1,
+        "net_name": "+24v",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "FXP1",
+        "from_xy": [
+          331.094501,
+          -42.832999
+        ],
+        "distance_mm": 205.30909718220718
+      },
+      {
+        "net_code": 2,
+        "net_name": "+3.3v",
+        "x_mm": 130.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "DS1",
+        "from_xy": [
+          155.19400000000002,
+          112.79400000000001
+        ],
+        "distance_mm": 48.02929389445572
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 130.25,
+        "y_mm": 29.506003,
+        "side": "right",
+        "from_ref": "VOLa1",
+        "from_xy": [
+          396.784002,
+          29.506003
+        ],
+        "distance_mm": 266.534002
+      },
+      {
+        "net_code": 13,
+        "net_name": "Audio Input P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "StageP1",
+        "from_xy": [
+          342.694499,
+          -81.26299900000001
+        ],
+        "distance_mm": 227.36704062448234
+      },
+      {
+        "net_code": 16,
+        "net_name": "B+",
+        "x_mm": 130.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "Q9",
+        "from_xy": [
+          472.17900000000003,
+          157.99
+        ],
+        "distance_mm": 352.63689347684544
+      },
+      {
+        "net_code": 30,
+        "net_name": "C+",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "C13",
+        "from_xy": [
+          433.8045,
+          -42.133
+        ],
+        "distance_mm": 306.4302859693376
+      },
+      {
+        "net_code": 34,
+        "net_name": "Cathode Audio Out P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "SourceP1",
+        "from_xy": [
+          342.6945,
+          -74.913
+        ],
+        "distance_mm": 225.18265730124511
+      },
+      {
+        "net_code": 52,
+        "net_name": "EQ P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "EQP1",
+        "from_xy": [
+          331.0945,
+          -54.183
+        ],
+        "distance_mm": 207.95980782172788
+      },
+      {
+        "net_code": 59,
+        "net_name": "Enable P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "StageP1",
+        "from_xy": [
+          335.094501,
+          -88.263001
+        ],
+        "distance_mm": 222.9519184375075
+      },
+      {
+        "net_code": 66,
+        "net_name": "FX P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "FXP1",
+        "from_xy": [
+          331.094501,
+          -49.833000999999996
+        ],
+        "distance_mm": 206.8743279629084
+      },
+      {
+        "net_code": 71,
+        "net_name": "GND-24",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "doutdriverT1",
+        "from_xy": [
+          542.0845,
+          -47.172999999999995
+        ],
+        "distance_mm": 414.4990027964483
+      },
+      {
+        "net_code": 72,
+        "net_name": "GND-5",
+        "x_mm": 71.25,
+        "y_mm": -0.25,
+        "side": "top",
+        "from_ref": "S1",
+        "from_xy": [
+          71.25,
+          -22.741
+        ],
+        "distance_mm": 22.491
+      },
+      {
+        "net_code": 73,
+        "net_name": "GND-B",
+        "x_mm": 130.25,
+        "y_mm": 7.246,
+        "side": "right",
+        "from_ref": "VOLb3",
+        "from_xy": [
+          431.104,
+          7.246
+        ],
+        "distance_mm": 300.854
+      },
+      {
+        "net_code": 74,
+        "net_name": "GND-C",
+        "x_mm": 130.25,
+        "y_mm": 20.596,
+        "side": "right",
+        "from_ref": "VOLb2",
+        "from_xy": [
+          417.754,
+          20.596
+        ],
+        "distance_mm": 287.504
+      },
+      {
+        "net_code": 75,
+        "net_name": "GND-D",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "J1",
+        "from_xy": [
+          334.1645,
+          -92.913
+        ],
+        "distance_mm": 223.98114849078257
+      },
+      {
+        "net_code": 76,
+        "net_name": "GND-MASTER (PSU)",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "R15",
+        "from_xy": [
+          574.5895,
+          -101.033
+        ],
+        "distance_mm": 455.6257283662217
+      },
+      {
+        "net_code": 169,
+        "net_name": "Net-(D1-A)",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "C4",
+        "from_xy": [
+          574.5395,
+          -99.223
+        ],
+        "distance_mm": 455.1799803805633
+      },
+      {
+        "net_code": 366,
+        "net_name": "Plate Audio Out P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "SourceP1",
+        "from_xy": [
+          338.29449999999997,
+          -67.913
+        ],
+        "distance_mm": 218.77110309465002
+      },
+      {
+        "net_code": 378,
+        "net_name": "SCL_Control",
+        "x_mm": 130.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "GPIO1PAN1",
+        "from_xy": [
+          398.929,
+          148.735
+        ],
+        "distance_mm": 279.49077849904097
+      },
+      {
+        "net_code": 379,
+        "net_name": "SCL_Sense",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "ADCT1",
+        "from_xy": [
+          505.277,
+          -67.973
+        ],
+        "distance_mm": 381.0927124178577
+      },
+      {
+        "net_code": 380,
+        "net_name": "SDA_Control",
+        "x_mm": 130.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "GPIO1PAN1",
+        "from_xy": [
+          398.929,
+          149.385
+        ],
+        "distance_mm": 279.6705173342374
+      },
+      {
+        "net_code": 381,
+        "net_name": "SDA_Sense",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "ADCT1",
+        "from_xy": [
+          499.55199999999996,
+          -67.973
+        ],
+        "distance_mm": 375.46021351536035
+      },
+      {
+        "net_code": 393,
+        "net_name": "Source P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "SourceP1",
+        "from_xy": [
+          335.0945,
+          -74.913
+        ],
+        "distance_mm": 218.02713764403273
+      },
+      {
+        "net_code": 398,
+        "net_name": "VAC_OE",
+        "x_mm": 130.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "LEDEQ1",
+        "from_xy": [
+          536.7914999999999,
+          137.935
+        ],
+        "distance_mm": 411.89373076953956
+      },
+      {
+        "net_code": 420,
+        "net_name": "Volume Bot P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "R2",
+        "from_xy": [
+          333.0495,
+          -39.633
+        ],
+        "distance_mm": 206.58813588696233
+      },
+      {
+        "net_code": 423,
+        "net_name": "Volume Top P1",
+        "x_mm": 130.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "R1",
+        "from_xy": [
+          333.0495,
+          -41.443
+        ],
+        "distance_mm": 206.94081387983863
+      }
+    ],
+    "fixed_inside_nets": [],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": "no feasible starting placement found in the region \u2014 C28 courtyard leaves the region fence; GstopP1 courtyard leaves the region fence; KBC3P1 courtyard leaves the region fence; Kbyp2P1 courtyard leaves the region fence; LEDP1 courtyard leaves the region fence; NFBb3 courtyard leaves the region fence; +2 more",
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "right",
+      "mm": 15.0,
+      "pressure": {
+        "left": 0.0,
+        "right": 20.0,
+        "top": 1.0,
+        "bottom": 5.0
+      },
+      "reason": "no feasible placement exists yet \u2014 fix the reason above before reading anything into this direction"
+    },
+    "preflight": [],
+    "runtime_s": 1.25
+  }
+}

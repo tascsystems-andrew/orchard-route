@@ -1,0 +1,609 @@
+{
+ "area0": {
+  "enc_sizzle": [
+   "R188",
+   "R189",
+   "R190",
+   "C77",
+   "C78",
+   "C79",
+   "C99"
+  ],
+  "enc_boom": [
+   "R191",
+   "R192",
+   "R193",
+   "C80",
+   "C81",
+   "C89",
+   "C100"
+  ],
+  "enc_body": [
+   "R194",
+   "R195",
+   "R196",
+   "C90",
+   "C91",
+   "C92",
+   "C101"
+  ],
+  "enc_bite": [
+   "R197",
+   "R198",
+   "R199",
+   "C93",
+   "C94",
+   "C95",
+   "C102"
+  ],
+  "enc_howl": [
+   "R200",
+   "R201",
+   "R202",
+   "C96",
+   "C97",
+   "C98",
+   "C103"
+  ],
+  "voicing_sw2": [
+   "R185",
+   "R186",
+   "C87",
+   "C88"
+  ],
+  "voicing_sw3": [
+   "R183",
+   "R184",
+   "C85",
+   "C86"
+  ],
+  "gpio_exp_17": [
+   "GPIO1PAN1",
+   "C22",
+   "R69",
+   "R68"
+  ]
+ },
+ "area1": {
+  "triode_gain_core_T1": [
+   "R22",
+   "GstopT1",
+   "R27",
+   "G1T1",
+   "R23",
+   "PT1",
+   "Q2",
+   "R36",
+   "CCS1",
+   "R29",
+   "R21",
+   "C13",
+   "C10",
+   "R55"
+  ],
+  "triode_gain_core_T2": [
+   "R25",
+   "GstopT2",
+   "R31",
+   "G1T2",
+   "R26",
+   "PT2",
+   "Q3",
+   "R40",
+   "CCS2",
+   "R34",
+   "R24",
+   "C16",
+   "C12",
+   "R57"
+  ],
+  "triode_plate_nfb_T1": [
+   "C8",
+   "R44",
+   "R47",
+   "R48",
+   "ACPLATE1",
+   "R41",
+   "NFBa1",
+   "R28",
+   "NFBb1",
+   "R30",
+   "C6",
+   "R213"
+  ],
+  "triode_plate_nfb_T2": [
+   "C9",
+   "R46",
+   "R51",
+   "R52",
+   "ACPLATE2",
+   "R45",
+   "NFBa2",
+   "R32",
+   "NFBb2",
+   "R35",
+   "C7",
+   "R214"
+  ],
+  "triode_cathode_bias_T1": [
+   "C14",
+   "KT1",
+   "R38",
+   "Kbias1",
+   "R33",
+   "R39",
+   "R49",
+   "R50",
+   "C11",
+   "R56",
+   "ADCT1",
+   "C18"
+  ],
+  "triode_cathode_bias_T2": [
+   "C17",
+   "KT2",
+   "R42",
+   "Kbias2",
+   "R37",
+   "R43",
+   "R53",
+   "R54",
+   "C15",
+   "R58",
+   "ADCT2",
+   "C19"
+  ],
+  "triode_cathode_bypass_T1": [
+   "KbyT1T1",
+   "KBC1T1",
+   "KbyT1T2",
+   "KBC2T1",
+   "Kbyp3T1",
+   "KBC3T1",
+   "KbypenT1"
+  ],
+  "triode_cathode_bypass_T2": [
+   "KbyT2T1",
+   "KBC1T2",
+   "KbyT2T2",
+   "KBC2T2",
+   "Kbyp3T2",
+   "KBC3T2",
+   "KbypenT2"
+  ],
+  "triode_digital_control": [
+   "GPIOTRIODE1",
+   "R59",
+   "C20",
+   "doutdriverT1",
+   "doutdriverT2",
+   "LEDTRIODES1",
+   "C21"
+  ],
+  "pentode_core": [
+   "GstopP1",
+   "G1P1",
+   "R72",
+   "C27",
+   "R73",
+   "PP1",
+   "Q4",
+   "C29",
+   "R79",
+   "CCS3",
+   "R76",
+   "R74"
+  ],
+  "screen_g2": [
+   "G2P1",
+   "P1LDRScreen1",
+   "R90",
+   "R84",
+   "P1LDRts1",
+   "R87"
+  ],
+  "plate_load_output": [
+   "C28",
+   "R83",
+   "ACPLATE3",
+   "R82",
+   "R85",
+   "R86",
+   "R91",
+   "R71",
+   "C31",
+   "R215"
+  ],
+  "nfb_network": [
+   "NFBa3",
+   "R75",
+   "NFBb3",
+   "R77"
+  ],
+  "cathode_bias_sense": [
+   "R81",
+   "R88",
+   "R89",
+   "KP1",
+   "C30",
+   "C32",
+   "Kbias3",
+   "R78",
+   "R80",
+   "R92"
+  ],
+  "cathode_bypass_relays": [
+   "Kbyp1P1",
+   "Kbyp2P1",
+   "Kbyp3P1",
+   "KbypenP1",
+   "KBC1P1",
+   "KBC2P1",
+   "KBC3P1"
+  ],
+  "digital_control": [
+   "GPIOPENTODE1",
+   "R93",
+   "C35",
+   "OUTDRIVERP1",
+   "LEDP1",
+   "C33",
+   "ADCP1",
+   "C34"
+  ],
+  "eq_input_buffer": [
+   "EQBuffer1",
+   "D3",
+   "C43",
+   "R106",
+   "R107",
+   "R110",
+   "Q9",
+   "Q10",
+   "R112",
+   "C45",
+   "R207",
+   "R208"
+  ],
+  "eq_output_buffer": [
+   "C44",
+   "C59",
+   "R108",
+   "R109",
+   "R111",
+   "Q11",
+   "Q12",
+   "R113",
+   "C46",
+   "R209",
+   "R210"
+  ],
+  "eq_master_tone_control": [
+   "R116",
+   "VCFTS1",
+   "R118",
+   "R120",
+   "C50"
+  ],
+  "eq_core_bus_driver": [
+   "R134",
+   "R135",
+   "Q19",
+   "Q22",
+   "Q24",
+   "Q23",
+   "R142",
+   "R146",
+   "Q27",
+   "Q28",
+   "R150",
+   "R143",
+   "R114",
+   "R115",
+   "C47",
+   "R216"
+  ],
+  "eq_led_driver": [
+   "LEDEQ1",
+   "C63"
+  ],
+  "eq_band_1": [
+   "Q13",
+   "Q14",
+   "R117",
+   "R122",
+   "R119",
+   "C48",
+   "C49",
+   "VCFT1",
+   "VCFB1",
+   "R121",
+   "R123"
+  ],
+  "eq_band_2": [
+   "Q15",
+   "Q16",
+   "R124",
+   "R127",
+   "R125",
+   "C51",
+   "C52",
+   "VCFT2",
+   "VCFB2",
+   "R126",
+   "R128"
+  ],
+  "eq_band_3": [
+   "Q17",
+   "Q18",
+   "R129",
+   "R132",
+   "R130",
+   "C53",
+   "C54",
+   "VCFT3",
+   "VCFB3",
+   "R131",
+   "R133"
+  ],
+  "eq_band_4": [
+   "Q20",
+   "Q21",
+   "R136",
+   "R140",
+   "R138",
+   "C55",
+   "C56",
+   "VCFT4",
+   "VCFB4",
+   "R139",
+   "R141"
+  ],
+  "eq_band_5": [
+   "Q25",
+   "Q26",
+   "R144",
+   "R148",
+   "R145",
+   "C57",
+   "C58",
+   "VCFT5",
+   "VCFB5",
+   "R147",
+   "R149"
+  ],
+  "eq_band_6": [
+   "Q29",
+   "Q30",
+   "R151",
+   "R154",
+   "R152",
+   "C60",
+   "C61",
+   "VCFT6",
+   "VCFB6",
+   "R153",
+   "R155"
+  ],
+  "eq_shelf_band_7": [
+   "C62",
+   "VCFT7",
+   "VCFB7",
+   "R156",
+   "R157",
+   "R158"
+  ],
+  "fx_input_send_buffer": [
+   "C36",
+   "R94",
+   "R97",
+   "Q6",
+   "R100",
+   "C38",
+   "RV1",
+   "Q5",
+   "R99",
+   "C40"
+  ],
+  "fx_output_return_buffer": [
+   "C37",
+   "R95",
+   "R96",
+   "R98",
+   "Q7",
+   "Q8",
+   "R101",
+   "C39"
+  ],
+  "fx_send_return_opto_jack": [
+   "J4",
+   "C41",
+   "VOLa4",
+   "VOLb4",
+   "R102",
+   "R103",
+   "VOLa5",
+   "VOLb5",
+   "R104",
+   "R105",
+   "C42"
+  ],
+  "PA_phase_inverter": [
+   "U4",
+   "R159",
+   "D4",
+   "D5",
+   "C65",
+   "R161",
+   "R166",
+   "R162",
+   "R165",
+   "R167",
+   "C66",
+   "R177",
+   "R179"
+  ],
+  "PA_supply_vmid": [
+   "R160",
+   "C64",
+   "C69",
+   "R163",
+   "R164",
+   "C67",
+   "C68",
+   "R168",
+   "R169",
+   "R211",
+   "R212"
+  ],
+  "PA_output_half_1": [
+   "R172",
+   "Q31",
+   "R174",
+   "C73",
+   "R176",
+   "C75"
+  ],
+  "PA_output_half_2": [
+   "R173",
+   "Q32",
+   "R175",
+   "C74",
+   "R178",
+   "C76"
+  ],
+  "PA_output_transformer": [
+   "Pri-CT1",
+   "C72",
+   "Pri-A1",
+   "Pri-B1",
+   "Spkr+1",
+   "Spkr-1"
+  ],
+  "PA_bias_generator": [
+   "U19",
+   "C104",
+   "U5",
+   "R204",
+   "R203",
+   "R205",
+   "R206"
+  ],
+  "PA_gate_bias_clamp": [
+   "C70",
+   "R171",
+   "D6",
+   "C71",
+   "R170",
+   "D7"
+  ],
+  "channel_route_P1": [
+   "StageP1",
+   "SourceP1",
+   "VOLa1",
+   "VOLb1",
+   "C1",
+   "R1",
+   "R2",
+   "EQP1",
+   "FXP1"
+  ],
+  "channel_route_T1": [
+   "StageT1",
+   "SourceT1",
+   "VOLa2",
+   "VOLb2",
+   "C2",
+   "R3",
+   "R4",
+   "EQT1",
+   "FXT1"
+  ],
+  "channel_route_T2": [
+   "StageT2",
+   "SourceT2",
+   "VOLa3",
+   "VOLb3",
+   "C3",
+   "R5",
+   "R6",
+   "EQT2",
+   "FXT2"
+  ],
+  "ground_rail_distribution": [
+   "D1",
+   "R18",
+   "B+1",
+   "C+1",
+   "D+1",
+   "G1",
+   "G2",
+   "G3",
+   "G4",
+   "G5",
+   "G6",
+   "G7",
+   "G8"
+  ],
+  "guitar_input_jack": [
+   "J1"
+  ]
+ },
+ "area2": {
+  "enc_nav": [
+   "R180",
+   "R181",
+   "R182",
+   "C82",
+   "C83",
+   "C84"
+  ],
+  "oled_display": [
+   "R62",
+   "R63",
+   "R61",
+   "R60",
+   "C24"
+  ],
+  "gpio_exp_08": [
+   "GPIO2PAN1",
+   "C23",
+   "R70",
+   "R187"
+  ],
+  "midi_io": [
+   "J2",
+   "R64",
+   "D2",
+   "U3",
+   "R65",
+   "C25",
+   "J3",
+   "R66",
+   "R67"
+  ],
+  "mcu_control_core": [
+   "U2",
+   "C5",
+   "R7",
+   "R8",
+   "R9",
+   "R10",
+   "R13",
+   "Reset1",
+   "LEDGLOBAL1",
+   "Q1",
+   "R11",
+   "R12"
+  ],
+  "rail_monitor": [
+   "R16",
+   "R17",
+   "R19",
+   "R20",
+   "R14",
+   "R15",
+   "C4"
+  ]
+ }
+}

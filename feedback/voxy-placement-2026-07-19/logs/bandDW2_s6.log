@@ -1,0 +1,937 @@
+{
+  "candidates": [],
+  "diagnostics": {
+    "region": [
+      202.65,
+      -0.25,
+      50.3,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 6,
+    "movable": [
+      "C47",
+      "C48",
+      "C50",
+      "C51",
+      "C52",
+      "C53",
+      "C54",
+      "C55",
+      "C56",
+      "C57",
+      "C58",
+      "C60",
+      "C61",
+      "C62",
+      "C63",
+      "D3",
+      "Q10",
+      "Q11",
+      "Q12",
+      "Q13",
+      "Q14",
+      "Q15",
+      "Q16",
+      "Q17",
+      "Q18",
+      "Q19",
+      "Q20",
+      "Q21",
+      "Q22",
+      "Q23",
+      "Q24",
+      "Q25",
+      "Q26",
+      "Q27",
+      "Q28",
+      "Q29",
+      "Q30",
+      "Q9",
+      "R106",
+      "R107",
+      "R108",
+      "R109",
+      "R110",
+      "R111",
+      "R112",
+      "R113",
+      "R114",
+      "R115",
+      "R116",
+      "R117",
+      "R118",
+      "R119",
+      "R120",
+      "R121",
+      "R122",
+      "R123",
+      "R124",
+      "R125",
+      "R126",
+      "R127",
+      "R128",
+      "R129",
+      "R130",
+      "R131",
+      "R132",
+      "R133",
+      "R134",
+      "R135",
+      "R136",
+      "R138",
+      "R139",
+      "R140",
+      "R141",
+      "R142",
+      "R143",
+      "R144",
+      "R145",
+      "R146",
+      "R147",
+      "R148",
+      "R149",
+      "R150",
+      "R151",
+      "R152",
+      "R153",
+      "R154",
+      "R155",
+      "R156",
+      "R157",
+      "R158",
+      "R207",
+      "R208",
+      "R209",
+      "R210",
+      "R216"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [
+      "C43",
+      "C44",
+      "C45",
+      "C46",
+      "C49",
+      "C59",
+      "EQBuffer1",
+      "LEDEQ1",
+      "VCFB1",
+      "VCFB2",
+      "VCFB3",
+      "VCFB4",
+      "VCFB5",
+      "VCFB6",
+      "VCFB7",
+      "VCFT1",
+      "VCFT2",
+      "VCFT3",
+      "VCFT4",
+      "VCFT5",
+      "VCFT6",
+      "VCFT7",
+      "VCFTS1"
+    ],
+    "seeded": [
+      {
+        "ref": "C47",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          2.25
+        ],
+        "distance_mm": 238.661,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C48",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          2.25
+        ],
+        "distance_mm": 222.661,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C50",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          246.65,
+          2.25
+        ],
+        "distance_mm": 246.66,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C51",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          7.25
+        ],
+        "distance_mm": 222.768,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C52",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          7.25
+        ],
+        "distance_mm": 238.76,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C53",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          12.25
+        ],
+        "distance_mm": 222.987,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C54",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          17.25
+        ],
+        "distance_mm": 223.317,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C55",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          246.65,
+          17.25
+        ],
+        "distance_mm": 247.252,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C56",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          22.25
+        ],
+        "distance_mm": 223.759,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C57",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          246.65,
+          22.25
+        ],
+        "distance_mm": 247.652,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C58",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          27.25
+        ],
+        "distance_mm": 216.373,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C60",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          27.25
+        ],
+        "distance_mm": 224.311,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C61",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          32.25
+        ],
+        "distance_mm": 240.819,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C62",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          230.65,
+          37.25
+        ],
+        "distance_mm": 233.639,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C63",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          37.25
+        ],
+        "distance_mm": 217.858,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "D3",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          42.25
+        ],
+        "distance_mm": 210.925,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q10",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          42.25
+        ],
+        "distance_mm": 218.769,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q11",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          42.25
+        ],
+        "distance_mm": 242.361,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q12",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          47.25
+        ],
+        "distance_mm": 211.983,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q13",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          52.25
+        ],
+        "distance_mm": 213.153,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q14",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          57.25
+        ],
+        "distance_mm": 214.434,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q15",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          57.25
+        ],
+        "distance_mm": 222.154,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q16",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          57.25
+        ],
+        "distance_mm": 245.421,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q17",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          62.25
+        ],
+        "distance_mm": 215.822,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q18",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          62.25
+        ],
+        "distance_mm": 223.494,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q19",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          62.25
+        ],
+        "distance_mm": 246.635,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q20",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          206.65,
+          67.25
+        ],
+        "distance_mm": 217.317,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q21",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          67.25
+        ],
+        "distance_mm": 224.938,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q22",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          67.25
+        ],
+        "distance_mm": 232.585,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q23",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          230.65,
+          67.25
+        ],
+        "distance_mm": 240.254,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q24",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          67.25
+        ],
+        "distance_mm": 247.944,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "Q25",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          246.65,
+          67.25
+        ],
+        "distance_mm": 255.654,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R106",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          42.25
+        ],
+        "distance_mm": 226.623,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R107",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          47.25
+        ],
+        "distance_mm": 219.789,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R108",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          47.25
+        ],
+        "distance_mm": 227.608,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R109",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          230.65,
+          47.25
+        ],
+        "distance_mm": 235.44,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R110",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          37.25
+        ],
+        "distance_mm": 225.745,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R111",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          37.25
+        ],
+        "distance_mm": 241.54,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R112",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          238.65,
+          47.25
+        ],
+        "distance_mm": 243.283,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R113",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          214.65,
+          52.25
+        ],
+        "distance_mm": 220.918,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R114",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          222.65,
+          62.25
+        ],
+        "distance_mm": 231.188,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "R115",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          0.0,
+          0.0
+        ],
+        "to": [
+          230.65,
+          62.25
+        ],
+        "distance_mm": 238.903,
+        "displaces_movable": 0
+      }
+    ],
+    "boundary_nets": [
+      {
+        "net_code": 1,
+        "net_name": "+24v",
+        "x_mm": 202.65,
+        "y_mm": 41.949999,
+        "side": "left",
+        "from_ref": "OUTDRIVERP1",
+        "from_xy": [
+          180.170002,
+          41.949999
+        ],
+        "distance_mm": 22.479997999999995
+      },
+      {
+        "net_code": 2,
+        "net_name": "+3.3v",
+        "x_mm": 202.65,
+        "y_mm": 29.75,
+        "side": "left",
+        "from_ref": "C34",
+        "from_xy": [
+          200.025,
+          29.75
+        ],
+        "distance_mm": 2.625
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 202.65,
+        "y_mm": 44.709996,
+        "side": "left",
+        "from_ref": "GstopP1",
+        "from_xy": [
+          196.250001,
+          44.709996
+        ],
+        "distance_mm": 6.399999000000008
+      },
+      {
+        "net_code": 16,
+        "net_name": "B+",
+        "x_mm": 202.65,
+        "y_mm": 10.25,
+        "side": "left",
+        "from_ref": "B+1",
+        "from_xy": [
+          153.75,
+          10.25
+        ],
+        "distance_mm": 48.900000000000006
+      },
+      {
+        "net_code": 53,
+        "net_name": "EQ Return",
+        "x_mm": 202.65,
+        "y_mm": 13.05,
+        "side": "left",
+        "from_ref": "EQP1",
+        "from_xy": [
+          70.85,
+          13.05
+        ],
+        "distance_mm": 131.8
+      },
+      {
+        "net_code": 57,
+        "net_name": "EQBuffer",
+        "x_mm": 252.95,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "Q1",
+        "from_xy": [
+          554.9245,
+          -44.843
+        ],
+        "distance_mm": 305.24929860566425
+      },
+      {
+        "net_code": 72,
+        "net_name": "GND-5",
+        "x_mm": 202.65,
+        "y_mm": 31.025,
+        "side": "left",
+        "from_ref": "C33",
+        "from_xy": [
+          195.25,
+          31.025
+        ],
+        "distance_mm": 7.400000000000006
+      },
+      {
+        "net_code": 73,
+        "net_name": "GND-B",
+        "x_mm": 202.65,
+        "y_mm": 24.75,
+        "side": "left",
+        "from_ref": "G1",
+        "from_xy": [
+          197.25,
+          24.75
+        ],
+        "distance_mm": 5.400000000000006
+      },
+      {
+        "net_code": 314,
+        "net_name": "Net-(R114-Pad2)",
+        "x_mm": 202.65,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "R211",
+        "from_xy": [
+          -1.4625,
+          0.0
+        ],
+        "distance_mm": 204.1125
+      },
+      {
+        "net_code": 315,
+        "net_name": "Net-(R115-Pad2)",
+        "x_mm": 202.65,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "R212",
+        "from_xy": [
+          -1.4625,
+          0.0
+        ],
+        "distance_mm": 204.1125
+      },
+      {
+        "net_code": 414,
+        "net_name": "VMID",
+        "x_mm": 202.65,
+        "y_mm": 0.0,
+        "side": "left",
+        "from_ref": "R211",
+        "from_xy": [
+          1.4625,
+          0.0
+        ],
+        "distance_mm": 201.1875
+      }
+    ],
+    "fixed_inside_nets": [
+      "+24v",
+      "+3.3v",
+      "EQ Return",
+      "EQBuffer",
+      "GND-5",
+      "Input EQ",
+      "N Bus",
+      "Net-(C43-Pad2)",
+      "Net-(C44-Pad2)",
+      "Net-(C48-Pad1)",
+      "Net-(C52-Pad1)",
+      "Net-(C54-Pad1)",
+      "Net-(C56-Pad1)",
+      "Net-(C58-Pad1)",
+      "Net-(C61-Pad1)",
+      "Net-(C62-Pad1)",
+      "Net-(Q10-D)",
+      "Net-(Q11-S)",
+      "Net-(Q27-S)",
+      "Net-(R116-Pad2)",
+      "Net-(VCFB1-+)",
+      "Net-(VCFB2-+)",
+      "Net-(VCFB3-+)",
+      "Net-(VCFB4-+)",
+      "Net-(VCFB5-+)",
+      "Net-(VCFB6-+)",
+      "Net-(VCFB7-+)",
+      "Net-(VCFT1-+)",
+      "Net-(VCFT2-+)",
+      "Net-(VCFT3-+)",
+      "Net-(VCFT4-+)",
+      "Net-(VCFT5-+)",
+      "Net-(VCFT6-+)",
+      "Net-(VCFT7-+)",
+      "Net-(VCFTS1-+)",
+      "Output Buffer Output EQ",
+      "P Bus"
+    ],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": "no feasible starting placement found in the region \u2014 Q28 courtyard leaves the region fence; Q9 courtyard leaves the region fence; C47 and Q18 courtyards overlap; C47 and R130 courtyards overlap; Q14 and R208 courtyards overlap; Q15 and R156 courtyards overlap; +11 more",
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "left",
+      "mm": 12.5,
+      "pressure": {
+        "left": 10.0,
+        "right": 1.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
+      "reason": "no feasible placement exists yet \u2014 fix the reason above before reading anything into this direction"
+    },
+    "preflight": [],
+    "runtime_s": 1.81
+  }
+}

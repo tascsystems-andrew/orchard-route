@@ -1,0 +1,370 @@
+{
+  "candidates": [],
+  "diagnostics": {
+    "region": [
+      245.25,
+      -0.25,
+      55.0,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 0,
+    "movable": [
+      "C104",
+      "C64",
+      "C65",
+      "C66",
+      "C67",
+      "C68",
+      "C69",
+      "C70",
+      "C71",
+      "C72",
+      "C73",
+      "C74",
+      "C75",
+      "C76",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "Pri-A1",
+      "Pri-B1",
+      "Pri-CT1",
+      "Q31",
+      "Q32",
+      "R159",
+      "R160",
+      "R161",
+      "R162",
+      "R163",
+      "R164",
+      "R165",
+      "R166",
+      "R167",
+      "R168",
+      "R169",
+      "R170",
+      "R171",
+      "R172",
+      "R173",
+      "R174",
+      "R175",
+      "R176",
+      "R177",
+      "R178",
+      "R179",
+      "R203",
+      "R204",
+      "R205",
+      "R206",
+      "R211",
+      "R212",
+      "Spkr+1",
+      "Spkr-1",
+      "U19",
+      "U4",
+      "U5"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [],
+    "seeded": [
+      {
+        "ref": "C104",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          584.885,
+          -98.743
+        ],
+        "to": [
+          259.75,
+          4.75
+        ],
+        "distance_mm": 341.209,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C64",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          573.985,
+          -57.033
+        ],
+        "to": [
+          259.75,
+          15.75
+        ],
+        "distance_mm": 322.554,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C65",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          573.985,
+          -82.703
+        ],
+        "to": [
+          259.75,
+          25.75
+        ],
+        "distance_mm": 332.424,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C66",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          573.985,
+          -80.393
+        ],
+        "to": [
+          259.75,
+          36.75
+        ],
+        "distance_mm": 335.36,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C67",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          573.985,
+          -54.723
+        ],
+        "to": [
+          259.75,
+          46.75
+        ],
+        "distance_mm": 330.213,
+        "displaces_movable": 0
+      },
+      {
+        "ref": "C68",
+        "constraint": "off-board pile -> fence scatter",
+        "from": [
+          573.764,
+          -44.103
+        ],
+        "to": [
+          259.75,
+          57.75
+        ],
+        "distance_mm": 330.119,
+        "displaces_movable": 0
+      }
+    ],
+    "boundary_nets": [
+      {
+        "net_code": 1,
+        "net_name": "+24v",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "FXP1",
+        "from_xy": [
+          331.094501,
+          -42.832999
+        ],
+        "distance_mm": 52.58036749370435
+      },
+      {
+        "net_code": 2,
+        "net_name": "+3.3v",
+        "x_mm": 300.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "R188",
+        "from_xy": [
+          368.284,
+          127.72
+        ],
+        "distance_mm": 88.09804796929384
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 245.25,
+        "y_mm": 32.25,
+        "side": "left",
+        "from_ref": "VOLa4",
+        "from_xy": [
+          241.21,
+          32.25
+        ],
+        "distance_mm": 4.039999999999992
+      },
+      {
+        "net_code": 16,
+        "net_name": "B+",
+        "x_mm": 245.25,
+        "y_mm": 48.75,
+        "side": "left",
+        "from_ref": "Q5",
+        "from_xy": [
+          239.6,
+          48.75
+        ],
+        "distance_mm": 5.650000000000006
+      },
+      {
+        "net_code": 72,
+        "net_name": "GND-5",
+        "x_mm": 245.25,
+        "y_mm": -0.25,
+        "side": "left",
+        "from_ref": "S5",
+        "from_xy": [
+          228.75,
+          -22.741
+        ],
+        "distance_mm": 27.894355719392408
+      },
+      {
+        "net_code": 73,
+        "net_name": "GND-B",
+        "x_mm": 245.25,
+        "y_mm": 21.6,
+        "side": "left",
+        "from_ref": "Q8",
+        "from_xy": [
+          244.25,
+          21.6
+        ],
+        "distance_mm": 1.0
+      },
+      {
+        "net_code": 90,
+        "net_name": "Input PI",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "StageT2",
+        "from_xy": [
+          353.84450000000004,
+          -47.063
+        ],
+        "distance_mm": 71.16057475351084
+      },
+      {
+        "net_code": 314,
+        "net_name": "Net-(R114-Pad2)",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "R114",
+        "from_xy": [
+          596.7655,
+          -122.181
+        ],
+        "distance_mm": 320.60662891033616
+      },
+      {
+        "net_code": 315,
+        "net_name": "Net-(R115-Pad2)",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "R115",
+        "from_xy": [
+          596.7655,
+          -119.671
+        ],
+        "distance_mm": 319.66047140872763
+      },
+      {
+        "net_code": 317,
+        "net_name": "Net-(R168-Pad2)",
+        "x_mm": 245.25,
+        "y_mm": 57.75,
+        "side": "left",
+        "from_ref": "R95",
+        "from_xy": [
+          230.2875,
+          57.75
+        ],
+        "distance_mm": 14.962500000000006
+      },
+      {
+        "net_code": 318,
+        "net_name": "Net-(R169-Pad1)",
+        "x_mm": 245.25,
+        "y_mm": 37.75,
+        "side": "left",
+        "from_ref": "R96",
+        "from_xy": [
+          237.7125,
+          37.75
+        ],
+        "distance_mm": 7.537499999999994
+      },
+      {
+        "net_code": 378,
+        "net_name": "SCL_Control",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "GPIOPENTODE1",
+        "from_xy": [
+          412.6545,
+          -54.147999999999996
+        ],
+        "distance_mm": 124.65859787535715
+      },
+      {
+        "net_code": 380,
+        "net_name": "SDA_Control",
+        "x_mm": 300.25,
+        "y_mm": -0.25,
+        "side": "right",
+        "from_ref": "GPIOPENTODE1",
+        "from_xy": [
+          412.6545,
+          -53.498
+        ],
+        "distance_mm": 124.37894164306913
+      },
+      {
+        "net_code": 414,
+        "net_name": "VMID",
+        "x_mm": 300.25,
+        "y_mm": 71.75,
+        "side": "bottom",
+        "from_ref": "R119",
+        "from_xy": [
+          487.254,
+          136.57
+        ],
+        "distance_mm": 197.91949983768654
+      }
+    ],
+    "fixed_inside_nets": [],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": "no feasible starting placement found in the region \u2014 R174 courtyard leaves the region fence; R175 courtyard leaves the region fence",
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "left",
+      "mm": 14.0,
+      "pressure": {
+        "left": 6.0,
+        "right": 6.0,
+        "top": 0.0,
+        "bottom": 2.0
+      },
+      "reason": "no feasible placement exists yet \u2014 fix the reason above before reading anything into this direction"
+    },
+    "preflight": [],
+    "runtime_s": 1.21
+  }
+}

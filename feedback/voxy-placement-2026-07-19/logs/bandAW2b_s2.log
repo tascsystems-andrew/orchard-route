@@ -1,0 +1,1317 @@
+{
+  "candidates": [
+    {
+      "id": 1,
+      "placements": {
+        "ADCT1": [
+          51.75,
+          12.75,
+          180.0
+        ],
+        "ADCT2": [
+          49.25,
+          63.25,
+          90.0
+        ],
+        "C18": [
+          44.75,
+          6.25,
+          90.0
+        ],
+        "C19": [
+          22.75,
+          67.25,
+          180.0
+        ],
+        "G1T1": [
+          46.75,
+          6.75,
+          0.0
+        ],
+        "G1T2": [
+          52.75,
+          46.75,
+          270.0
+        ],
+        "J1": [
+          52.75,
+          30.25,
+          0.0
+        ],
+        "KT1": [
+          17.75,
+          9.75,
+          0.0
+        ],
+        "KT2": [
+          46.25,
+          45.75,
+          270.0
+        ],
+        "PT1": [
+          14.75,
+          43.75,
+          180.0
+        ],
+        "PT2": [
+          25.75,
+          13.75,
+          270.0
+        ],
+        "Q2": [
+          54.75,
+          7.75,
+          90.0
+        ],
+        "Q3": [
+          2.75,
+          41.25,
+          270.0
+        ],
+        "R21": [
+          2.25,
+          30.75,
+          180.0
+        ],
+        "R213": [
+          53.25,
+          60.75,
+          270.0
+        ],
+        "R214": [
+          15.75,
+          20.25,
+          0.0
+        ],
+        "R22": [
+          42.75,
+          60.75,
+          0.0
+        ],
+        "R23": [
+          29.25,
+          6.25,
+          90.0
+        ],
+        "R24": [
+          24.25,
+          59.25,
+          0.0
+        ],
+        "R25": [
+          50.25,
+          56.25,
+          90.0
+        ],
+        "R26": [
+          53.75,
+          23.75,
+          270.0
+        ],
+        "R27": [
+          37.75,
+          56.25,
+          270.0
+        ],
+        "R28": [
+          39.25,
+          48.75,
+          90.0
+        ],
+        "R29": [
+          53.75,
+          68.25,
+          90.0
+        ],
+        "R30": [
+          28.25,
+          59.75,
+          270.0
+        ],
+        "R31": [
+          38.25,
+          32.25,
+          270.0
+        ],
+        "R32": [
+          6.75,
+          50.25,
+          180.0
+        ],
+        "R33": [
+          50.75,
+          48.25,
+          90.0
+        ],
+        "R34": [
+          23.75,
+          20.25,
+          0.0
+        ],
+        "R35": [
+          54.75,
+          38.75,
+          270.0
+        ],
+        "R36": [
+          45.75,
+          17.25,
+          0.0
+        ],
+        "R37": [
+          26.75,
+          48.25,
+          180.0
+        ],
+        "R38": [
+          27.25,
+          43.75,
+          0.0
+        ],
+        "R39": [
+          44.75,
+          24.25,
+          0.0
+        ],
+        "R40": [
+          5.75,
+          53.25,
+          90.0
+        ],
+        "R41": [
+          40.75,
+          26.25,
+          180.0
+        ],
+        "R42": [
+          44.75,
+          12.25,
+          270.0
+        ],
+        "R43": [
+          42.25,
+          47.75,
+          180.0
+        ],
+        "R44": [
+          33.25,
+          32.75,
+          90.0
+        ],
+        "R45": [
+          54.75,
+          54.75,
+          0.0
+        ],
+        "R46": [
+          6.25,
+          58.25,
+          0.0
+        ],
+        "R47": [
+          48.25,
+          23.25,
+          90.0
+        ],
+        "R48": [
+          26.25,
+          67.75,
+          270.0
+        ],
+        "R49": [
+          29.75,
+          20.75,
+          0.0
+        ],
+        "R50": [
+          23.75,
+          40.25,
+          0.0
+        ],
+        "R51": [
+          14.25,
+          54.25,
+          90.0
+        ],
+        "R52": [
+          16.25,
+          14.75,
+          180.0
+        ],
+        "R53": [
+          21.75,
+          70.25,
+          180.0
+        ],
+        "R54": [
+          44.25,
+          40.75,
+          90.0
+        ],
+        "R55": [
+          30.75,
+          14.25,
+          90.0
+        ],
+        "R56": [
+          27.25,
+          18.25,
+          0.0
+        ],
+        "R57": [
+          35.75,
+          48.75,
+          180.0
+        ],
+        "R58": [
+          12.25,
+          70.25,
+          180.0
+        ]
+      },
+      "routed": "62/62",
+      "nets_ok": 62,
+      "nets_total": 62,
+      "wirelength_mm": 3433.233,
+      "vias": 155,
+      "constraint_violations": [],
+      "score": 3743.233,
+      "board_copy": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandAW2b_s2/cand-1.kicad_pcb",
+      "svg": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandAW2b_s2/cand-1.svg",
+      "hpwl_mm": 2990.77,
+      "failed": [],
+      "elite_rank": 4,
+      "iterations": 13
+    },
+    {
+      "id": 2,
+      "placements": {
+        "ADCT1": [
+          51.75,
+          12.75,
+          180.0
+        ],
+        "ADCT2": [
+          49.25,
+          63.25,
+          90.0
+        ],
+        "C18": [
+          44.75,
+          6.25,
+          90.0
+        ],
+        "C19": [
+          22.75,
+          67.25,
+          180.0
+        ],
+        "G1T1": [
+          46.75,
+          6.75,
+          0.0
+        ],
+        "G1T2": [
+          52.75,
+          46.75,
+          270.0
+        ],
+        "J1": [
+          52.75,
+          30.25,
+          0.0
+        ],
+        "KT1": [
+          26.75,
+          48.25,
+          0.0
+        ],
+        "KT2": [
+          46.25,
+          45.75,
+          270.0
+        ],
+        "PT1": [
+          14.75,
+          43.75,
+          180.0
+        ],
+        "PT2": [
+          25.75,
+          13.75,
+          270.0
+        ],
+        "Q2": [
+          44.25,
+          40.75,
+          90.0
+        ],
+        "Q3": [
+          2.75,
+          41.25,
+          270.0
+        ],
+        "R21": [
+          54.75,
+          7.75,
+          180.0
+        ],
+        "R213": [
+          53.25,
+          60.75,
+          270.0
+        ],
+        "R214": [
+          15.75,
+          20.25,
+          0.0
+        ],
+        "R22": [
+          42.75,
+          60.75,
+          0.0
+        ],
+        "R23": [
+          29.25,
+          6.25,
+          90.0
+        ],
+        "R24": [
+          49.25,
+          70.25,
+          0.0
+        ],
+        "R25": [
+          50.25,
+          56.25,
+          90.0
+        ],
+        "R26": [
+          53.75,
+          23.75,
+          270.0
+        ],
+        "R27": [
+          37.75,
+          56.25,
+          270.0
+        ],
+        "R28": [
+          39.25,
+          48.75,
+          90.0
+        ],
+        "R29": [
+          52.75,
+          52.25,
+          90.0
+        ],
+        "R30": [
+          28.25,
+          59.75,
+          270.0
+        ],
+        "R31": [
+          38.25,
+          32.25,
+          270.0
+        ],
+        "R32": [
+          6.75,
+          50.25,
+          180.0
+        ],
+        "R33": [
+          50.75,
+          48.25,
+          90.0
+        ],
+        "R34": [
+          23.75,
+          20.25,
+          0.0
+        ],
+        "R35": [
+          54.75,
+          38.75,
+          270.0
+        ],
+        "R36": [
+          45.75,
+          17.25,
+          0.0
+        ],
+        "R37": [
+          17.75,
+          9.75,
+          180.0
+        ],
+        "R38": [
+          18.75,
+          30.25,
+          0.0
+        ],
+        "R39": [
+          44.75,
+          24.25,
+          90.0
+        ],
+        "R40": [
+          5.75,
+          53.25,
+          90.0
+        ],
+        "R41": [
+          40.75,
+          26.25,
+          180.0
+        ],
+        "R42": [
+          44.75,
+          12.25,
+          270.0
+        ],
+        "R43": [
+          42.25,
+          47.75,
+          180.0
+        ],
+        "R44": [
+          33.25,
+          32.75,
+          90.0
+        ],
+        "R45": [
+          33.75,
+          55.75,
+          270.0
+        ],
+        "R46": [
+          6.25,
+          58.25,
+          0.0
+        ],
+        "R47": [
+          48.25,
+          23.25,
+          90.0
+        ],
+        "R48": [
+          26.25,
+          67.75,
+          270.0
+        ],
+        "R49": [
+          29.75,
+          20.75,
+          0.0
+        ],
+        "R50": [
+          23.75,
+          40.25,
+          0.0
+        ],
+        "R51": [
+          14.25,
+          54.25,
+          90.0
+        ],
+        "R52": [
+          16.25,
+          14.75,
+          180.0
+        ],
+        "R53": [
+          21.75,
+          70.25,
+          180.0
+        ],
+        "R54": [
+          2.25,
+          30.75,
+          90.0
+        ],
+        "R55": [
+          35.25,
+          11.25,
+          90.0
+        ],
+        "R56": [
+          27.25,
+          18.25,
+          0.0
+        ],
+        "R57": [
+          53.75,
+          68.25,
+          180.0
+        ],
+        "R58": [
+          12.25,
+          70.25,
+          180.0
+        ]
+      },
+      "routed": "62/62",
+      "nets_ok": 62,
+      "nets_total": 62,
+      "wirelength_mm": 3452.233,
+      "vias": 156,
+      "constraint_violations": [],
+      "score": 3764.233,
+      "board_copy": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandAW2b_s2/cand-2.kicad_pcb",
+      "svg": "/private/tmp/claude-501/-Users-andrew/9a7c9df0-e186-4053-a538-2adfe13bbb1b/scratchpad/out/bandAW2b_s2/cand-2.svg",
+      "hpwl_mm": 2965.261,
+      "failed": [],
+      "elite_rank": 0,
+      "iterations": 13
+    }
+  ],
+  "diagnostics": {
+    "region": [
+      0.25,
+      -0.25,
+      57.1,
+      72.0
+    ],
+    "area": null,
+    "pitch_mm": 0.5,
+    "layers": [
+      "F.Cu",
+      "B.Cu"
+    ],
+    "seed": 2,
+    "movable": [
+      "ADCT1",
+      "ADCT2",
+      "C18",
+      "C19",
+      "G1T1",
+      "G1T2",
+      "J1",
+      "KT1",
+      "KT2",
+      "PT1",
+      "PT2",
+      "Q2",
+      "Q3",
+      "R21",
+      "R213",
+      "R214",
+      "R22",
+      "R23",
+      "R24",
+      "R25",
+      "R26",
+      "R27",
+      "R28",
+      "R29",
+      "R30",
+      "R31",
+      "R32",
+      "R33",
+      "R34",
+      "R35",
+      "R36",
+      "R37",
+      "R38",
+      "R39",
+      "R40",
+      "R41",
+      "R42",
+      "R43",
+      "R44",
+      "R45",
+      "R46",
+      "R47",
+      "R48",
+      "R49",
+      "R50",
+      "R51",
+      "R52",
+      "R53",
+      "R54",
+      "R55",
+      "R56",
+      "R57",
+      "R58"
+    ],
+    "movable_source": "explicit list",
+    "auto_fixed": [],
+    "auto_fixed_note": "locked footprints inside the fence, frozen at their KiCad position as obstacles + fixed HPWL anchors (never moved)",
+    "unplaced_free_parts": [],
+    "unplaced_note": "unlocked parts sitting off every board outline (a default-placed pile) \u2014 assigned to NO area, not auto-added; name them in components to place them, or roughly place them in KiCad first",
+    "frozen_obstacles": [
+      "ACPLATE1",
+      "ACPLATE2",
+      "C10",
+      "C104",
+      "C11",
+      "C12",
+      "C13",
+      "C14",
+      "C15",
+      "C16",
+      "C17",
+      "C36",
+      "C38",
+      "C41",
+      "C42",
+      "C47",
+      "C48",
+      "C50",
+      "C51",
+      "C52",
+      "C53",
+      "C54",
+      "C55",
+      "C56",
+      "C57",
+      "C58",
+      "C6",
+      "C60",
+      "C61",
+      "C62",
+      "C63",
+      "C64",
+      "C65",
+      "C66",
+      "C67",
+      "C68",
+      "C69",
+      "C7",
+      "C70",
+      "C71",
+      "C72",
+      "C73",
+      "C74",
+      "C75",
+      "C76",
+      "C8",
+      "C9",
+      "CCS1",
+      "CCS2",
+      "D3",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "GstopT1",
+      "GstopT2",
+      "J4",
+      "Kbias1",
+      "Kbias2",
+      "NFBa1",
+      "NFBa2",
+      "NFBb1",
+      "NFBb2",
+      "Pri-A1",
+      "Pri-B1",
+      "Pri-CT1",
+      "Q10",
+      "Q11",
+      "Q12",
+      "Q13",
+      "Q14",
+      "Q15",
+      "Q16",
+      "Q17",
+      "Q18",
+      "Q19",
+      "Q20",
+      "Q21",
+      "Q22",
+      "Q23",
+      "Q24",
+      "Q25",
+      "Q26",
+      "Q27",
+      "Q28",
+      "Q29",
+      "Q30",
+      "Q5",
+      "Q6",
+      "Q7",
+      "Q8",
+      "Q9",
+      "R100",
+      "R101",
+      "R102",
+      "R103",
+      "R104",
+      "R105",
+      "R106",
+      "R107",
+      "R108",
+      "R109",
+      "R110",
+      "R111",
+      "R112",
+      "R113",
+      "R114",
+      "R115",
+      "R116",
+      "R117",
+      "R118",
+      "R119",
+      "R120",
+      "R121",
+      "R122",
+      "R123",
+      "R124",
+      "R125",
+      "R126",
+      "R127",
+      "R128",
+      "R129",
+      "R130",
+      "R131",
+      "R132",
+      "R133",
+      "R134",
+      "R135",
+      "R136",
+      "R138",
+      "R139",
+      "R140",
+      "R141",
+      "R142",
+      "R143",
+      "R144",
+      "R145",
+      "R146",
+      "R147",
+      "R148",
+      "R149",
+      "R150",
+      "R151",
+      "R152",
+      "R153",
+      "R154",
+      "R155",
+      "R156",
+      "R157",
+      "R158",
+      "R159",
+      "R160",
+      "R161",
+      "R162",
+      "R163",
+      "R164",
+      "R165",
+      "R166",
+      "R167",
+      "R168",
+      "R169",
+      "R170",
+      "R171",
+      "R172",
+      "R173",
+      "R176",
+      "R177",
+      "R178",
+      "R179",
+      "R203",
+      "R204",
+      "R205",
+      "R206",
+      "R207",
+      "R208",
+      "R209",
+      "R210",
+      "R211",
+      "R212",
+      "R216",
+      "R94",
+      "R95",
+      "R96",
+      "R97",
+      "R98",
+      "R99",
+      "Spkr+1",
+      "Spkr-1",
+      "U5"
+    ],
+    "seeded": [],
+    "boundary_nets": [
+      {
+        "net_code": 2,
+        "net_name": "+3.3v",
+        "x_mm": 57.35,
+        "y_mm": 43.475,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          43.475
+        ],
+        "distance_mm": 0.6375000000000028
+      },
+      {
+        "net_code": 3,
+        "net_name": "+5v",
+        "x_mm": 2.1125,
+        "y_mm": -0.25,
+        "side": "top",
+        "from_ref": "U5",
+        "from_xy": [
+          2.1125,
+          -0.975
+        ],
+        "distance_mm": 0.725
+      },
+      {
+        "net_code": 14,
+        "net_name": "Audio Input T1",
+        "x_mm": 57.35,
+        "y_mm": 10.05,
+        "side": "right",
+        "from_ref": "StageT1",
+        "from_xy": [
+          74.35,
+          10.05
+        ],
+        "distance_mm": 16.999999999999993
+      },
+      {
+        "net_code": 15,
+        "net_name": "Audio Input T2",
+        "x_mm": 57.35,
+        "y_mm": 48.05,
+        "side": "right",
+        "from_ref": "StageT2",
+        "from_xy": [
+          68.85,
+          48.05
+        ],
+        "distance_mm": 11.499999999999993
+      },
+      {
+        "net_code": 30,
+        "net_name": "C+",
+        "x_mm": 57.35,
+        "y_mm": 68.25,
+        "side": "right",
+        "from_ref": "C+1",
+        "from_xy": [
+          186.25,
+          68.25
+        ],
+        "distance_mm": 128.9
+      },
+      {
+        "net_code": 35,
+        "net_name": "Cathode Audio Out T1",
+        "x_mm": 57.35,
+        "y_mm": 18.25,
+        "side": "right",
+        "from_ref": "SourceT1",
+        "from_xy": [
+          114.55,
+          18.25
+        ],
+        "distance_mm": 57.199999999999996
+      },
+      {
+        "net_code": 36,
+        "net_name": "Cathode Audio Out T2",
+        "x_mm": 57.35,
+        "y_mm": 56.55,
+        "side": "right",
+        "from_ref": "SourceT2",
+        "from_xy": [
+          108.85,
+          56.55
+        ],
+        "distance_mm": 51.49999999999999
+      },
+      {
+        "net_code": 74,
+        "net_name": "GND-C",
+        "x_mm": 57.35,
+        "y_mm": 51.25,
+        "side": "right",
+        "from_ref": "VOLb2",
+        "from_xy": [
+          76.47,
+          51.25
+        ],
+        "distance_mm": 19.119999999999997
+      },
+      {
+        "net_code": 75,
+        "net_name": "GND-D",
+        "x_mm": 57.35,
+        "y_mm": 37.25,
+        "side": "right",
+        "from_ref": "VOLb1",
+        "from_xy": [
+          144.47,
+          37.25
+        ],
+        "distance_mm": 87.12
+      },
+      {
+        "net_code": 78,
+        "net_name": "Gstop LED T1",
+        "x_mm": 57.35,
+        "y_mm": 40.225,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          63.7125,
+          40.225
+        ],
+        "distance_mm": 6.362499999999997
+      },
+      {
+        "net_code": 79,
+        "net_name": "Gstop LED T2",
+        "x_mm": 57.35,
+        "y_mm": 35.025,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          35.025
+        ],
+        "distance_mm": 0.6375000000000028
+      },
+      {
+        "net_code": 104,
+        "net_name": "KbypIn T1",
+        "x_mm": 57.35,
+        "y_mm": 33.25,
+        "side": "right",
+        "from_ref": "Kbyp3T1",
+        "from_xy": [
+          86.25,
+          33.25
+        ],
+        "distance_mm": 28.9
+      },
+      {
+        "net_code": 105,
+        "net_name": "KbypIn T2",
+        "x_mm": 57.35,
+        "y_mm": 63.15,
+        "side": "right",
+        "from_ref": "Kbyp3T2",
+        "from_xy": [
+          116.85,
+          63.15
+        ],
+        "distance_mm": 59.49999999999999
+      },
+      {
+        "net_code": 107,
+        "net_name": "KbypOut T1",
+        "x_mm": 57.35,
+        "y_mm": 41.65,
+        "side": "right",
+        "from_ref": "KbypenT1",
+        "from_xy": [
+          118.35,
+          41.65
+        ],
+        "distance_mm": 60.99999999999999
+      },
+      {
+        "net_code": 108,
+        "net_name": "KbypOut T2",
+        "x_mm": 57.35,
+        "y_mm": 49.15,
+        "side": "right",
+        "from_ref": "KbypenT2",
+        "from_xy": [
+          127.35,
+          49.15
+        ],
+        "distance_mm": 70.0
+      },
+      {
+        "net_code": 109,
+        "net_name": "Main Input P1",
+        "x_mm": 57.35,
+        "y_mm": 27.75,
+        "side": "right",
+        "from_ref": "StageP1",
+        "from_xy": [
+          123.75,
+          27.75
+        ],
+        "distance_mm": 66.4
+      },
+      {
+        "net_code": 118,
+        "net_name": "NFB LED BOT T1",
+        "x_mm": 57.35,
+        "y_mm": 37.625,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          63.7125,
+          37.625
+        ],
+        "distance_mm": 6.362499999999997
+      },
+      {
+        "net_code": 119,
+        "net_name": "NFB LED BOT T2",
+        "x_mm": 57.35,
+        "y_mm": 37.625,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          37.625
+        ],
+        "distance_mm": 0.6375000000000028
+      },
+      {
+        "net_code": 121,
+        "net_name": "NFB LED Top T1",
+        "x_mm": 57.35,
+        "y_mm": 38.275,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          63.7125,
+          38.275
+        ],
+        "distance_mm": 6.362499999999997
+      },
+      {
+        "net_code": 122,
+        "net_name": "NFB LED Top T2",
+        "x_mm": 57.35,
+        "y_mm": 36.975,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          36.975
+        ],
+        "distance_mm": 0.6375000000000028
+      },
+      {
+        "net_code": 367,
+        "net_name": "Plate Audio Out T1",
+        "x_mm": 57.35,
+        "y_mm": 11.25,
+        "side": "right",
+        "from_ref": "SourceT1",
+        "from_xy": [
+          118.94999999999999,
+          11.25
+        ],
+        "distance_mm": 61.59999999999999
+      },
+      {
+        "net_code": 368,
+        "net_name": "Plate Audio Out T2",
+        "x_mm": 57.35,
+        "y_mm": 52.15,
+        "side": "right",
+        "from_ref": "SourceT2",
+        "from_xy": [
+          101.85,
+          52.15
+        ],
+        "distance_mm": 44.49999999999999
+      },
+      {
+        "net_code": 379,
+        "net_name": "SCL_Sense",
+        "x_mm": 57.35,
+        "y_mm": 42.175,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          42.175
+        ],
+        "distance_mm": 0.6375000000000028
+      },
+      {
+        "net_code": 381,
+        "net_name": "SDA_Sense",
+        "x_mm": 57.35,
+        "y_mm": 42.825,
+        "side": "right",
+        "from_ref": "LEDTRIODES1",
+        "from_xy": [
+          57.987500000000004,
+          42.825
+        ],
+        "distance_mm": 0.6375000000000028
+      }
+    ],
+    "fixed_inside_nets": [
+      "+5v",
+      "Audio Input T1",
+      "Audio Input T2",
+      "C+",
+      "Cathode Audio Out T1",
+      "Cathode Audio Out T2",
+      "Cathode Voltage T1",
+      "Cathode Voltage T2",
+      "GND-C",
+      "KbypIn T1",
+      "KbypIn T2",
+      "KbypOut T1",
+      "KbypOut T2",
+      "Net-(ACPLATE1-+)",
+      "Net-(ACPLATE1-Pad4)",
+      "Net-(ACPLATE2-+)",
+      "Net-(ACPLATE2-Pad4)",
+      "Net-(C8-Pad2)",
+      "Net-(C9-Pad2)",
+      "Net-(CCS1-+)",
+      "Net-(CCS1-Pad4)",
+      "Net-(CCS2-+)",
+      "Net-(CCS2-Pad4)",
+      "Net-(G1T1-Pad1)",
+      "Net-(G1T2-Pad1)",
+      "Net-(GstopT1--)",
+      "Net-(GstopT2--)",
+      "Net-(Kbias1-+)",
+      "Net-(Kbias1-Pad4)",
+      "Net-(Kbias2-+)",
+      "Net-(Kbias2-Pad4)",
+      "Net-(NFBa1--)",
+      "Net-(NFBa2--)",
+      "Net-(NFBb1--)",
+      "Net-(NFBb2--)",
+      "Net-(Q2-G)",
+      "Net-(Q3-G)",
+      "Plate Audio Out T1",
+      "Plate Audio Out T2"
+    ],
+    "courtyard_note": "courtyards are a v1 proxy: pad-bbox union + margin (board.py parses no courtyard layers yet)",
+    "geometry_warnings": [],
+    "infeasible_reason": null,
+    "binding_constraint": null,
+    "unrouted": [],
+    "suggested_expansion": {
+      "direction": "right",
+      "mm": 14.5,
+      "pressure": {
+        "left": 4.0,
+        "right": 24.0,
+        "top": 1.0,
+        "bottom": 5.0
+      },
+      "reason": "24 of 34 pressure counts are on the right side (boundary terminals + courtyards within 1.00 mm of the fence)"
+    },
+    "preflight": [],
+    "anneal": {
+      "elites": 6,
+      "sweeps": 200,
+      "proposals": 159000,
+      "accepted": 45567,
+      "rejected_infeasible": 112952,
+      "reheats": 11,
+      "initial_energy": 3565.141,
+      "repaired_start": true,
+      "grid_mm": 0.5,
+      "courtyard_margin_mm": 0.25,
+      "best_energy": 2965.261
+    },
+    "stripped_tracks": {
+      "inside_fence": 43,
+      "crossing_fence": 0
+    },
+    "net_classes": {
+      "project": null,
+      "width_capped_nets": [],
+      "clearance_mm": 0.2,
+      "track_width_mm": 0.25,
+      "weights": {
+        "+3.3v": 1.0,
+        "+5v": 1.0,
+        "AC Plate T1": 1.0,
+        "AC Plate T2": 1.0,
+        "Audio Input T1": 1.0,
+        "Audio Input T2": 1.0,
+        "C+": 1.0,
+        "Cathode Audio Out T1": 1.0,
+        "Cathode Audio Out T2": 1.0,
+        "Cathode Voltage T1": 1.0,
+        "Cathode Voltage T2": 1.0,
+        "Current + T1": 1.0,
+        "Current + T2": 1.0,
+        "Current - T1": 1.0,
+        "Current - T2": 1.0,
+        "GND-C": 1.0,
+        "GND-D": 1.0,
+        "Gstop LED T1": 1.0,
+        "Gstop LED T2": 1.0,
+        "KbypIn T1": 1.0,
+        "KbypIn T2": 1.0,
+        "KbypOut T1": 1.0,
+        "KbypOut T2": 1.0,
+        "Main Input P1": 1.0,
+        "NFB LED BOT T1": 1.0,
+        "NFB LED BOT T2": 1.0,
+        "NFB LED Top T1": 1.0,
+        "NFB LED Top T2": 1.0,
+        "Net-(ACPLATE1-+)": 1.0,
+        "Net-(ACPLATE1-Pad4)": 1.0,
+        "Net-(ACPLATE2-+)": 1.0,
+        "Net-(ACPLATE2-Pad4)": 1.0,
+        "Net-(C8-Pad2)": 1.0,
+        "Net-(C9-Pad2)": 1.0,
+        "Net-(CCS1-+)": 1.0,
+        "Net-(CCS1-Pad4)": 1.0,
+        "Net-(CCS2-+)": 1.0,
+        "Net-(CCS2-Pad4)": 1.0,
+        "Net-(G1T1-Pad1)": 1.0,
+        "Net-(G1T2-Pad1)": 1.0,
+        "Net-(GstopT1--)": 1.0,
+        "Net-(GstopT2--)": 1.0,
+        "Net-(Kbias1-+)": 1.0,
+        "Net-(Kbias1-Pad4)": 1.0,
+        "Net-(Kbias2-+)": 1.0,
+        "Net-(Kbias2-Pad4)": 1.0,
+        "Net-(NFBa1--)": 1.0,
+        "Net-(NFBa2--)": 1.0,
+        "Net-(NFBb1--)": 1.0,
+        "Net-(NFBb2--)": 1.0,
+        "Net-(Q2-G)": 1.0,
+        "Net-(Q2-S)": 1.0,
+        "Net-(Q3-G)": 1.0,
+        "Net-(Q3-S)": 1.0,
+        "Net-(R213-Pad1)": 1.0,
+        "Net-(R214-Pad1)": 1.0,
+        "Plate Audio Out T1": 1.0,
+        "Plate Audio Out T2": 1.0,
+        "Plate Voltage T1": 1.0,
+        "Plate Voltage T2": 1.0,
+        "SCL_Sense": 1.0,
+        "SDA_Sense": 1.0,
+        "unconnected-(J1-PadG)": 1.0
+      }
+    },
+    "candidates_routed_fully": "2/2",
+    "finalists_routed": 6,
+    "lattice": {
+      "nodes": 40192,
+      "W": 128,
+      "H": 157,
+      "L": 2,
+      "window_mm": [
+        -1.75,
+        -2.25,
+        61.1,
+        76.0
+      ],
+      "window_pads": 606,
+      "clearance_inflate_mm": 0.325,
+      "degraded_pad_pairs": 323,
+      "pad_snap_conflicts": 2
+    },
+    "runtime_s": 77.05,
+    "work_dir": null
+  }
+}
