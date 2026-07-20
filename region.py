@@ -502,10 +502,26 @@ def _translate(part, nx, ny):
     return replace(part, x_mm=nx, y_mm=ny, pads=pads)
 
 
+def _on_board(court_rect, outline_regions):
+    """True when a part's courtyard overlaps SOME Edge.Cuts outline — it sits on
+    a real board, so it is not a default/F8 drop off in empty space. The
+    negation is 'pile': a footprint whose courtyard is off EVERY board outline,
+    belonging to no area (field report Finding 1).
+
+    This is the predicate the UNPLACED REPORT uses (_resolve_placement_set) to
+    flag UN-named parts that belong to no area. It is deliberately NOT the
+    scatter trigger: scatter only ever sees parts the caller explicitly NAMED
+    for a fence, and a named part off that fence was named to be moved there —
+    see _scatter_pile. Outlines are bbox proxies (board.OutlineRegion), the same
+    proxy the fence and clearance model already use."""
+    return any(_rects_overlap(court_rect, reg.bounds)
+               for reg in (outline_regions or ()))
+
+
 def _scatter_pile(order, pinned, live, courts, region, grid_mm, obstacles):
-    """Lay every non-pinned part whose courtyard is ENTIRELY OFF the fence onto
-    a deterministic, non-overlapping grid inside it. Mutates live/courts;
-    returns [move dict].
+    """Lay every non-pinned part whose courtyard is off THIS fence onto a
+    deterministic, non-overlapping grid inside it. Mutates live/courts; returns
+    [move dict].
 
     THE off-board-pile start (the design-driver's real case): free parts are
     default-placed in a pile at ~the board origin, carrying NO positional
@@ -514,20 +530,33 @@ def _scatter_pile(order, pinned, live, courts, region, grid_mm, obstacles):
     place.py's repair walk (random single-part relocation, accepted only when
     it lowers the O(N^2) overlap count) cannot reliably dig out of it.
 
-    So the parts with no meaningful position are placed FRESH: a regular grid
-    sized to the largest courtyard among them (plus one grid step of gap),
-    spread across the fence, each cell snapped to the placement grid. Cells do
-    not overlap and each part's courtyard fits its cell, so the scatter is
-    non-overlapping at the start; obstacles and already-placed (in-fence /
+    So the parts with no meaningful in-fence position are placed FRESH: a
+    regular grid sized to the largest courtyard among them (plus one grid step
+    of gap), spread across the fence, each cell snapped to the placement grid.
+    Cells do not overlap and each part's courtyard fits its cell, so the scatter
+    is non-overlapping at the start; obstacles and already-placed (in-fence /
     pinned) parts are stepped over. Deterministic — no RNG — so identical calls
     still return identical candidates.
 
-    The trigger is "courtyard does not touch the fence", NOT merely "center
-    outside": a part whose courtyard OVERLAPS the fence has a real position
-    that says where it belongs (an already-placed board, or a part straddling
-    the fence edge), and moving it would throw away that information and break
-    the tight adjacencies the caller placed it for. Only genuinely off-board
-    parts are scattered; a real hand layout is left untouched.
+    The trigger is "courtyard does not overlap THIS fence". Every part reaching
+    this function was EXPLICITLY NAMED for this fence (optimize_region's
+    components list), so a named part sitting off the fence — the origin pile, a
+    routine F8 / Update-PCB drop at arbitrary coordinates, a neighbouring area,
+    an adjacent band — is one the caller asked to move HERE, and it is scattered
+    in. Only a part whose courtyard already OVERLAPS the fence has a real
+    in-fence position; it is left where it is and the anneal refines it. The
+    trigger is fence-relative, NOT outline-relative, on purpose: an
+    outline-relative test would refuse to scatter a named on-board part (in
+    another area / an adjacent band) and strand it off-fence, where the weak
+    repair walk cannot reliably place it.
+
+    To preserve a whole seeded ARRANGEMENT rather than gridding each part afresh,
+    use respect_positions=True (seed_placement), which translates the off-fence
+    group in as a rigid unit. 'Pile' in the field-report sense — a part off
+    every board outline — is the concern of the UNPLACED REPORT
+    (_resolve_placement_set / _on_board), which flags UN-named parts belonging
+    to no area; scatter's narrower job is to give every NAMED part a feasible
+    in-fence start.
     """
     rx, ry, rw, rh = region
     fence_rect = (rx, ry, rx + rw, ry + rh)
@@ -865,7 +894,7 @@ def _resolve_placement_set(all_parts, region, components, auto_fix_locked,
         for r, p in sorted(all_parts.items()):
             if p.locked or r in movable:
                 continue
-            if all(not reg.contains(p.x_mm, p.y_mm) for reg in regions):
+            if not _on_board(part_courtyard(p), regions):
                 unplaced.append(r)
     return movable, auto_fixed, extra_fixed, unplaced
 
