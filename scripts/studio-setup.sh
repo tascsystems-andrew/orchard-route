@@ -205,20 +205,11 @@ finally:
     os.unlink(path)
 PYEOF
 
-say "Smoke 2/2: test_board.py (real-board fixtures where available)"
-VOXY_FIXTURE="/Users/andrew/Documents/Guitar/Voxy/Voxy/Voxy-arduino.kicad_pcb"
+say "Smoke 2/2: test_board.py (committed fixtures — no live boards)"
 if (cd "$REPO" && "$VENVPY" test_board.py); then
     note "test_board.py PASS"
 else
-    if [ ! -f "$VOXY_FIXTURE" ]; then
-        note "test_board.py did not pass on this machine, and its primary fixtures"
-        note "(Andrew's laptop-local amp projects under ~/Documents/Guitar/Voxy/) are absent."
-        note "That is expected on the Studio with an older checkout of test_board.py."
-        note "The synthetic smoke above already validated the parser + lattice here."
-        note "For the full suite: fetch bench boards per bench/boards/SOURCES.md and re-run."
-    else
-        die "test_board.py FAILED with its fixtures present — investigate before using this machine."
-    fi
+    die "test_board.py FAILED — it runs entirely off committed fixtures now, so this is a real failure, not a missing live board; investigate before using this machine."
 fi
 
 # ------------------------------------------------------------- 6. next steps
