@@ -177,13 +177,16 @@ def _rect_circle_overlap(rect, cx, cy, r):
     return (nx - cx) ** 2 + (ny - cy) ** 2 < r * r - 1e-12
 
 
-def _local_geometry(part, margin_mm):
+def _local_geometry(part, margin_mm, body_margin_mm=0.0):
     """(pad terminals in footprint-local frame, local courtyard rect).
 
     Terminals: (ox, oy, net_name) with the part's own rotation backed out,
-    so any candidate (x, y, rot) maps them with one _rot. Courtyard: union
-    of every pad's local bbox (pad rotation composed) + margin — the v1
-    proxy for the unparsed courtyard layers."""
+    so any candidate (x, y, rot) maps them with one _rot. Courtyard: the real
+    F.CrtYd when present (unioned with the pad bbox) + margin_mm, else the
+    pad-bbox proxy. body_margin_mm is an EXTRA margin added ONLY to the proxy
+    (no-courtyard footprints), where the pads under-model the body — a relay or
+    connector whose case overhangs its pads (finding C). It never touches a part
+    that draws a real courtyard."""
     terms = []
     lo_x = lo_y = math.inf
     hi_x = hi_y = -math.inf
@@ -211,15 +214,18 @@ def _local_geometry(part, margin_mm):
     if lc is not None:
         lo_x = min(lo_x, lc[0]); lo_y = min(lo_y, lc[1])
         hi_x = max(hi_x, lc[2]); hi_y = max(hi_y, lc[3])
-    return terms, (lo_x - margin_mm, lo_y - margin_mm,
-                   hi_x + margin_mm, hi_y + margin_mm)
+        m = margin_mm                  # a real courtyard already bounds the body
+    else:
+        m = margin_mm + body_margin_mm  # proxy: pad the guessed body extent
+    return terms, (lo_x - m, lo_y - m, hi_x + m, hi_y + m)
 
 
-def part_courtyard(part, margin_mm=COURTYARD_MARGIN_MM):
+def part_courtyard(part, margin_mm=COURTYARD_MARGIN_MM, body_margin_mm=0.0):
     """World courtyard rect of a part AT ITS CURRENT PLACEMENT — the helper
     region.py uses to turn out-of-region footprints into frozen obstacle
-    rects for anneal_region(obstacles=...)."""
-    _, local = _local_geometry(part, margin_mm)
+    rects for anneal_region(obstacles=...). body_margin_mm pads no-courtyard
+    footprints (see _local_geometry); 0 leaves the raw pad-bbox proxy."""
+    _, local = _local_geometry(part, margin_mm, body_margin_mm)
     return _world_rect(local, part.x_mm, part.y_mm, part.rot_deg)
 
 
@@ -234,7 +240,7 @@ class PlacementModel:
     def __init__(self, parts, region, constraints=(), *, obstacles=(),
                  keepouts=(), fixed_points=None, net_weights=None,
                  margin_mm=COURTYARD_MARGIN_MM, edge_tol_mm=1.0,
-                 penalty_scale_mm=10.0, min_gap_mm=0.0):
+                 penalty_scale_mm=10.0, min_gap_mm=0.0, body_margin_mm=0.0):
         self.parts = list(parts)
         self.refs = [p.ref for p in self.parts]
         if len(set(self.refs)) != len(self.refs):
@@ -263,7 +269,9 @@ class PlacementModel:
                                              known_refs=set(self.refs))
         self.home = {p.ref: (p.x_mm, p.y_mm, p.rot_deg) for p in self.parts}
 
-        self._geom = [_local_geometry(p, self.margin_mm) for p in self.parts]
+        self.body_margin_mm = float(body_margin_mm)
+        self._geom = [_local_geometry(p, self.margin_mm, self.body_margin_mm)
+                      for p in self.parts]
 
         # nets: name -> (weight, [fixed (x, y)], [(part_idx, ox, oy)]);
         # only nets with >= 2 endpoints pull. Sorted for stable float sums.
@@ -401,6 +409,7 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
                   keepouts=(), fixed_points=None, net_weights=None,
                   grid_mm=0.5, margin_mm=COURTYARD_MARGIN_MM,
                   edge_tol_mm=1.0, penalty_scale_mm=10.0, min_gap_mm=0.0,
+                  body_margin_mm=0.0,
                   seed=0, pool_size=8, sweeps=200, proposals_per_sweep=None,
                   t0=None, cool=0.95, reheat_factor=8.0, stall_sweeps=15):
     """Explore placements of parts inside a region fence; return the elite
@@ -428,7 +437,7 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
                            net_weights=net_weights,
                            margin_mm=margin_mm, edge_tol_mm=edge_tol_mm,
                            penalty_scale_mm=penalty_scale_mm,
-                           min_gap_mm=min_gap_mm)
+                           min_gap_mm=min_gap_mm, body_margin_mm=body_margin_mm)
     rng = random.Random(seed)
     rx, ry, rw, rh = model.region
     g = float(grid_mm)

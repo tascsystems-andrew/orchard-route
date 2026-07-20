@@ -360,6 +360,16 @@ if __name__ == "__main__":
         check(abs((wa[2] - wa[0]) - 6.5) < 1e-6 and abs((wa[3] - wa[1]) - 10.5) < 1e-6,
               f"asymmetric courtyard at rot=90 swaps to 6.5 x 10.5 "
               f"({wa[2] - wa[0]:.2f} x {wa[3] - wa[1]:.2f})")
+
+        # BODY MARGIN (finding C): body_margin_mm pads a NO-COURTYARD footprint
+        # (r1 is SMD, no F.CrtYd) but never one that draws a real courtyard (c1).
+        r_raw, r_bod = part_courtyard(r1), part_courtyard(r1, body_margin_mm=1.0)
+        check(abs((r_bod[2] - r_bod[0]) - (r_raw[2] - r_raw[0]) - 2.0) < 1e-6,
+              f"body_margin pads a no-courtyard part 1 mm/side "
+              f"({r_raw[2] - r_raw[0]:.2f} -> {r_bod[2] - r_bod[0]:.2f})")
+        c_raw, c_bod = part_courtyard(c1), part_courtyard(c1, body_margin_mm=1.0)
+        check(abs((c_bod[2] - c_bod[0]) - (c_raw[2] - c_raw[0])) < 1e-6,
+              "body_margin does NOT touch a part that draws a real courtyard")
     finally:
         shutil.rmtree(cyd, ignore_errors=True)
 
