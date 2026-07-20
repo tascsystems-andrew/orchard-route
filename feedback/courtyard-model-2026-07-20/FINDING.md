@@ -150,3 +150,22 @@ near-crashes are visible before DRC. (Workaround today: inflate every courtyard 
 Both compose with the courtyard fix above: once keep-outs use the real `F.CrtYd` and holes,
 a min-gap constraint makes the placed board DRC-clean on courtyard + hole clearance directly,
 no post-nudge.
+
+## C. Footprints with NO courtyard layer must be flagged (and sized > pad-bbox)
+
+**27 of Voxy's 496 footprints draw no courtyard at all** — 25 × `G6K-2F-Y:SMD_RELAY_G8`
+(the Source/Stage/EQ/FX and cathode-bypass switching relays), the `ProMicroC` MCU, and one
+`MCP4661` digipot. `region.py` already falls back to pad-bbox for these (§the pad-bbox proxy
+is all it ever had), so it doesn't stack them as hard as courtyard-bearing THT — BUT the
+fallback still under-models the body: the G6K's pad-bbox is 8.9 × 9.5 for a ~10 × 10 body,
+and the Pro Micro's pad span is shorter than its board. And any *consumer* that keys off the
+courtyard layer (an external DRC/census, a `--list-courtyards`) is **completely blind** to
+them — which is exactly how a placed board can report "0 overlaps" while a fifth of its
+relays sit on top of their neighbours.
+
+**Ask:** (1) when the courtyard fix (top of file) lands, keep the pad-bbox path as the
+explicit fallback **plus a body margin** (~1 mm) for no-courtyard footprints, not the raw
+pad bbox; (2) **emit a warning** naming every footprint with no `F.CrtYd` — "keep-out is a
+pad-bbox estimate, not a courtyard" — so the user knows which parts are guessed; (3) have
+`--list-courtyards` show `source: crtyd|pad-bbox` per part. On Voxy this one warning would
+have caught the 25 relays + MCU immediately instead of after a fab-view review.
