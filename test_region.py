@@ -876,6 +876,46 @@ def test_respect_positions():
           and not moves,
           "an in-fence arrangement is not moved at all under respect_positions")
 
+    # MIXED group (the review's blocking bug): a part already inside the fence
+    # must NOT be ejected when an off-fence part dominates the group bbox.
+    a_in = _translate(bp["A"], 20.0, 20.0)   # inside the (0,0,40,40) fence
+    b_off = bp["B"]                          # still at x=58 -> off-fence
+    mp, mmoves = seed_placement([a_in, b_off], region, [], [], 0.5,
+                                respect_positions=True)
+    mo = {p.ref: (round(p.x_mm, 3), round(p.y_mm, 3)) for p in mp}
+    b_ct = part_courtyard(next(p for p in mp if p.ref == "B"))
+    check(mo["A"] == (20.0, 20.0)
+          and all(m["ref"] == "B" for m in mmoves)
+          and 0 <= b_ct[0] and b_ct[2] <= 40,
+          "mixed group: the in-fence part stays put; only the off-fence part "
+          "is translated in")
+
+    # INTEGRATION: the flag must actually REACH seed_placement through
+    # optimize_region (a hardcoded respect_positions=False there would be a
+    # dead flag with a green unit suite). Spy on seed_placement, abort before
+    # the router runs — CPU-only, no GPU.
+    import region as _rg
+
+    class _StopSeed(Exception):
+        pass
+    seen = {}
+    orig = _rg.seed_placement
+
+    def _spy(*a, **kw):
+        seen["respect"] = kw.get("respect_positions")
+        raise _StopSeed
+    _rg.seed_placement = _spy
+    try:
+        _rg.optimize_region(src, ["A"], region,
+                            out_dir=os.path.join(OUT_DIR, "rp_wire"),
+                            respect_positions=True)
+    except _StopSeed:
+        pass
+    finally:
+        _rg.seed_placement = orig
+    check(seen.get("respect") is True,
+          "optimize_region forwards respect_positions through to seed_placement")
+
 
 TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("determinism", test_determinism), ("frozen", test_frozen_parts),

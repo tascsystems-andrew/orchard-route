@@ -580,20 +580,31 @@ def _scatter_pile(order, pinned, live, courts, region, grid_mm, obstacles):
 
 
 def _translate_group_into_fence(order, pinned, live, courts, region):
-    """RIGIDLY translate every non-pinned part by ONE common vector so their
+    """RIGIDLY translate the OFF-FENCE parts by ONE common vector so their
     collective courtyard bbox lands inside the fence — preserving every
     relative offset (the caller's deliberate arrangement), never scattering
     each part independently. This is `respect_positions`: a shelf-packed or
     stage.py-staged arrangement in a margin/staging strip is a real layout, not
-    a meaningless origin-pile, so it is moved in as a unit. Returns the move
-    list (empty if the group already sits inside the fence). If the arrangement
-    is wider or taller than the fence it is aligned to the fence's near corner
-    and left overflowing — the anneal's hard fence rejection then reports it,
-    the same as any oversized start."""
-    movers = [r for r in order if r not in pinned]
-    if not movers:
-        return []
+    a meaningless origin-pile, so it is moved in as a unit.
+
+    Only parts whose courtyard does NOT touch the fence are moved — the SAME
+    trigger _scatter_pile uses. A part already in the fence has a real position
+    and is left exactly where it is (translating the whole group off ONE
+    off-fence part would otherwise eject the in-fence ones). Returns the move
+    list (empty if nothing is off-fence, or the off-fence group already fits).
+
+    Caveats, honest: this does NOT avoid frozen obstacles or in-fence parts —
+    if the translated group lands on a locked footprint the anneal repairs it,
+    which perturbs the arrangement, so seed into a clear area. And an
+    arrangement wider/taller than the fence aligns to the near edge and
+    overflows; the anneal then repairs the overflowing parts to feasibility
+    (the seeded arrangement is partially lost), or fails if truly infeasible."""
     rx, ry, rw, rh = region
+    fence = (rx, ry, rx + rw, ry + rh)
+    movers = [r for r in order if r not in pinned
+              and not _rects_overlap(courts[r], fence)]
+    if not movers:
+        return []                       # nothing off-fence — all respected in place
     x0 = min(courts[r][0] for r in movers)
     y0 = min(courts[r][1] for r in movers)
     x1 = max(courts[r][2] for r in movers)
@@ -637,10 +648,12 @@ def seed_placement(parts, region, specs, obstacles, grid_mm,
 
     respect_positions=True: the caller's positions ARE the arrangement (a
     shelf-pack or a stage.py-staged layout). Skip the scatter and the adjacency
-    reseed entirely; rigidly translate the whole group into the fence,
-    preserving relative offsets, and let the anneal refine from there. This is
-    what makes a seeded start survive instead of being flattened onto a fresh
-    grid — parts already inside the fence never move.
+    reseed entirely; rigidly translate the OFF-FENCE group into the fence as a
+    unit, preserving relative offsets, and let the anneal refine from there.
+    This is what makes a seeded start survive instead of being flattened onto a
+    fresh grid. Parts already inside the fence never move (only off-fence parts
+    are translated); an adjacency_max_distance the seed does not already satisfy
+    is NOT reseeded, so seeds should pre-satisfy their adjacency constraints.
 
     Translation only, nearest grid site first, and every move is reported in
     diagnostics.seeded so nothing happens silently.
@@ -1541,9 +1554,11 @@ def main(argv=None):
     ap.add_argument("--respect-positions", action="store_true",
                     help="treat the components' input positions as a deliberate "
                          "arrangement (a shelf-pack or stage.py-staged layout): "
-                         "rigidly translate the group into the fence preserving "
-                         "relative offsets instead of scattering it onto a fresh "
-                         "grid, then anneal from there")
+                         "rigidly translate the off-fence group into the fence "
+                         "preserving relative offsets instead of scattering it "
+                         "onto a fresh grid, then anneal from there. In-fence "
+                         "parts stay put; seed clear of locked parts and "
+                         "pre-satisfy any adjacency_max_distance constraints")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--out", default=None, help="output directory")
     ap.add_argument("--pitch", type=float, default=0.5)
