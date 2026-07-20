@@ -302,6 +302,35 @@ def check_sheets():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def check_sides():
+    """board.footprint_sides reads the footprint (layer ...) node per footprint,
+    in file order: 'B' only for B.Cu, 'F' for F.Cu and for anything unlabelled
+    (KiCad's default). A back part's body can't collide with a front body (§3)."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, "sides.kicad_pcb")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(
+                '(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                '(44 "Edge.Cuts" user))\n\t(net 0 "")\n'
+                '\t(gr_rect (start 0 0) (end 40 20) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(footprint "R" (layer "F.Cu") (at 5 5)\n'
+                '\t\t(property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 0 "")))\n'
+                '\t(footprint "R" (layer "B.Cu") (at 15 5)\n'
+                '\t\t(property "Reference" "R2" (at 0 0 0) (layer "B.SilkS"))\n'
+                '\t\t(pad "1" smd rect (at 0 0) (size 1 1) (layers "B.Cu") (net 0 "")))\n'
+                ')\n')
+        sides = load_board(p).footprint_sides
+        check(sides == ("F", "B"),
+              f"footprint_sides reads the footprint layer per footprint in order "
+              f"('F' front, 'B' back) ({sides})")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def check_holes():
     """board._board_holes: a gr_circle on Edge.Cuts / User (incl. User.3, which
     the real Voxy board uses) is a mounting hole; an fp_circle on Edge.Cuts
@@ -366,6 +395,7 @@ if __name__ == "__main__":
     check_parser(brd)
     check_courtyards()
     check_sheets()
+    check_sides()
     check_holes()
     checked += 1
 

@@ -112,6 +112,11 @@ class Board:
                                   # (sheetname ...)) or None — a ready-made,
                                   # human-authored grouping (parts on one sheet
                                   # usually belong on one board/area).
+    footprint_sides: tuple = ()   # one entry per footprint IN _footprints()
+                                  # ORDER: "F" or "B", the side the part is
+                                  # placed on. A back-side body cannot collide
+                                  # with a front-side body in XY (opposite sides);
+                                  # its through-hole pads still block both layers.
     holes: tuple = ()             # (cx, cy, radius) per board mounting hole
                                   # (gr_circle on Edge.Cuts / User layers). The
                                   # placer keeps courtyards off these, inflated
@@ -356,6 +361,19 @@ def _footprint_sheet(fp):
     if node is not None and len(node) > 1 and isinstance(node[1], str):
         return str(node[1])
     return None
+
+
+def _footprint_side(fp):
+    """"F" or "B" — the board side the footprint sits on, from its own
+    (layer "F.Cu" | "B.Cu") node. A back-side part's BODY is on the far side, so
+    it cannot collide with a front part's body in XY; but a through-hole pad
+    drills through both sides, so its copper still blocks the front (place.py
+    handles the body via this side, the pads via their per-layer copper). Anything
+    that is not explicitly B.Cu is treated as front (KiCad's default)."""
+    node = _kid(fp, "layer")
+    if node is not None and len(node) > 1 and str(node[1]) == "B.Cu":
+        return "B"
+    return "F"
 
 
 def _hole_layer(g):
@@ -746,10 +764,12 @@ def load_board(path: str) -> Board:
     origin, size = _edge_bbox_of(shapes)
     courtyards = tuple(_footprint_courtyard(fp) for fp in _footprints(root))
     sheets = tuple(_footprint_sheet(fp) for fp in _footprints(root))
+    sides = tuple(_footprint_side(fp) for fp in _footprints(root))
     return Board(path=path, origin_mm=origin, size_mm=size,
                  copper_layers=copper_layers, nets=nets,
                  pads=pads, tracks=tracks, vias=vias,
                  outline_regions=tuple(outline_regions(shapes)),
                  footprint_courtyards=courtyards,
                  footprint_sheets=sheets,
+                 footprint_sides=sides,
                  holes=tuple(_board_holes(root, size)))
