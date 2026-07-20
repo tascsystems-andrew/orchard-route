@@ -15,10 +15,13 @@ board. It is shaped for test_place.py and test_writeback.py:
   5755#1 to (120, 60, 180) (rotation delta 270) lands that pad at
   (120 + 2, 60 + 2) = (122, 62) with angle (216 + 270) % 360 = 126.
 - four unrotated 2-pad resistors chained by four fully-routable nets
-  (SIGA/SIGB/SIGC/GND) plus a 180-degrees single-pad test pin on GND — so
+  (SIGA/SIGB/SIGC/GND) plus a 180-degrees single-pad test pin (TP1) on GND — so
   route_board() routes the board with ZERO failed nets at pitch 1.0, and the
   three single-pad valve nets (B+250, sig_in, Net-(V3-Pad1)) are named but
-  unrouted (the width-cap tests need one of each).
+  unrouted (the width-cap tests need one of each). TP1's GND pad sits on B.Cu
+  while the rest of GND is on F.Cu, so the GND route MUST drop a via — that
+  keeps test_writeback's via-emission checks live (an all-F.Cu board routes
+  flat, emits zero vias, and those checks go vacuous).
 - the valves sit well clear of the resistor row, so their net-0 pads are pure
   obstacles and never block the route.
 
@@ -33,10 +36,10 @@ NETS = ["", "SIGA", "SIGB", "SIGC", "GND", "B+250", "sig_in", "Net-(V3-Pad1)"]
 CODE = {n: i for i, n in enumerate(NETS)}
 
 
-def pad(num, ox, oy, w, h, net, angle=None):
+def pad(num, ox, oy, w, h, net, angle=None, layer="F.Cu"):
     at = f"(at {ox} {oy})" if angle is None else f"(at {ox} {oy} {angle})"
     return (f'\t\t(pad "{num}" smd rect {at} (size {w} {h}) '
-            f'(layers "F.Cu") (net {CODE[net]} "{net}"))')
+            f'(layers "{layer}") (net {CODE[net]} "{net}"))')
 
 
 def footprint(ref, x, y, rot, pads, lib="R_1206"):
@@ -82,8 +85,15 @@ def build():
         res("R4", 50.0, 38.0, "GND", "SIGA"),
         # the pad angle folds in the footprint's 180 (as pcbnew writes it), so a
         # move back to rot 0 must drop the now-zero pad angle again.
+        # TP1's GND pad is on B.Cu (every other pad is F.Cu): connecting GND to
+        # it forces the router to drop exactly one VIA, which keeps
+        # test_writeback's via-emission checks (count, net resolution, size/drill)
+        # LIVE. A planar all-F.Cu board emits zero vias and those four checks go
+        # vacuous — tautologies over an empty list — so a real via-writeback
+        # regression would sail through. One cross-layer pad is the cheapest
+        # honest way to force the via without adding a net or pad.
         footprint("TP1", 60.0, 38.0, 180, [
-            pad("1", 0.0, 0.0, 1.5, 1.5, "GND", angle=180)],
+            pad("1", 0.0, 0.0, 1.5, 1.5, "GND", angle=180, layer="B.Cu")],
             lib="TestPoint:TestPoint_Pad_D2.0mm"),
     ]
 
