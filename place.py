@@ -82,6 +82,9 @@ class Part:
                            # frame, or None. When present _local_geometry uses
                            # it (unioned with the pads) instead of the pad-bbox
                            # proxy — the true body keep-out for overhanging THT.
+    sheet: str = None      # board.Board.footprint_sheets entry: the schematic
+                           # sheet path (KiCad (sheetname ...)) or None — a
+                           # ready-made human grouping (floorplan.py reads it).
 
 
 @dataclass(frozen=True)
@@ -572,9 +575,12 @@ def parts_from_board(board_path, refs=None):
     # assert above guards). Key it by uref so lookups survive the ref/ref#N
     # addressing. If the two ever disagree in count, fall back to no courtyard
     # rather than misattribute one part's body to another.
-    court = {}
+    court, sheet = {}, {}
     if len(brd.footprint_courtyards) == len(records):
         court = {r.uref: brd.footprint_courtyards[i]
+                 for i, r in enumerate(records)}
+    if len(brd.footprint_sheets) == len(records):
+        sheet = {r.uref: brd.footprint_sheets[i]
                  for i, r in enumerate(records)}
     out = {}
     for key in ([r.uref for r in records] if refs is None else refs):
@@ -584,7 +590,8 @@ def parts_from_board(board_path, refs=None):
                         rot_deg=rec.rot_deg,
                         pads=tuple(brd.pads[o:o + rec.n_pads]),
                         locked=rec.locked,
-                        local_courtyard=court.get(rec.uref))
+                        local_courtyard=court.get(rec.uref),
+                        sheet=sheet.get(rec.uref))
     return out
 
 

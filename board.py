@@ -101,6 +101,11 @@ class Board:
                                   # rect (x0,y0,x1,y1) or None. The real body
                                   # keep-out for THT parts whose body overhangs
                                   # its pads (place._local_geometry prefers it).
+    footprint_sheets: tuple = ()  # one entry per footprint IN _footprints()
+                                  # ORDER: the schematic sheet path (KiCad's
+                                  # (sheetname ...)) or None — a ready-made,
+                                  # human-authored grouping (parts on one sheet
+                                  # usually belong on one board/area).
 
 
 # ── s-expression parsing ──────────────────────────────────────────────────────
@@ -330,6 +335,17 @@ def _footprint_courtyard(fp):
     if lo_x is math.inf:
         return None
     return (lo_x, lo_y, hi_x, hi_y)
+
+
+def _footprint_sheet(fp):
+    """The footprint's schematic sheet path — KiCad's (sheetname "...") child —
+    or None. This is a grouping the human ALREADY authored (by drawing the
+    schematic into sheets), so reading it is input, not inference: parts on one
+    sheet usually belong on one board / one area."""
+    node = _kid(fp, "sheetname")
+    if node is not None and len(node) > 1 and isinstance(node[1], str):
+        return str(node[1])
+    return None
 
 
 def _edge_shapes(root):
@@ -668,8 +684,10 @@ def load_board(path: str) -> Board:
     shapes = _edge_shapes(root)
     origin, size = _edge_bbox_of(shapes)
     courtyards = tuple(_footprint_courtyard(fp) for fp in _footprints(root))
+    sheets = tuple(_footprint_sheet(fp) for fp in _footprints(root))
     return Board(path=path, origin_mm=origin, size_mm=size,
                  copper_layers=copper_layers, nets=nets,
                  pads=pads, tracks=tracks, vias=vias,
                  outline_regions=tuple(outline_regions(shapes)),
-                 footprint_courtyards=courtyards)
+                 footprint_courtyards=courtyards,
+                 footprint_sheets=sheets)
