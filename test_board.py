@@ -302,6 +302,60 @@ def check_sheets():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def check_holes():
+    """board._board_holes: a gr_circle on Edge.Cuts / User (incl. User.3, which
+    the real Voxy board uses) is a mounting hole; an fp_circle on Edge.Cuts
+    inside a footprint (the MountingHole idiom) too; silk/decoration circles and
+    the round-board OUTLINE circle are excluded."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, "h.kicad_pcb")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(
+                '(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (44 "Edge.Cuts" user) (37 "F.SilkS" user))\n'
+                '\t(net 0 "")\n'
+                '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(gr_circle (center 10 10) (end 11.6 10) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(gr_circle (center 20 5) (end 21.3 5) (layer "User.3") (width 0.1))\n'
+                '\t(gr_circle (center 30 30) (end 35 30) (layer "F.SilkS") (width 0.1))\n'
+                '\t(footprint "MountingHole" (layer "F.Cu") (at 33 8)\n'
+                '\t\t(property "Reference" "H1" (at 0 0 0) (layer "F.SilkS"))\n'
+                '\t\t(fp_circle (center 0 0) (end 1.6 0) (layer "Edge.Cuts"))\n'
+                '\t\t(pad "1" np_thru_hole circle (at 0 0) (size 3.2 3.2) (drill 3.2) (layers "*.Cu")))\n'
+                ')\n')
+        by = {(round(cx, 1), round(cy, 1)): round(r, 2)
+              for cx, cy, r in load_board(p).holes}
+        check(len(by) == 3,
+              f"3 holes: Edge.Cuts + User.3 gr_circle + MountingHole fp_circle; "
+              f"the F.SilkS decoy is excluded (got {sorted(by)})")
+        check(by.get((10.0, 10.0)) == 1.6, f"Edge.Cuts hole r=1.6 ({by})")
+        check(by.get((20.0, 5.0)) == 1.3,
+              f"a User.3 hole IS read (Voxy uses User.3) ({by})")
+        check(by.get((33.0, 8.0)) == 1.6,
+              f"the MountingHole footprint's fp_circle is read at its placed "
+              f"frame ({by})")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    d2 = tempfile.mkdtemp()
+    try:
+        p2 = os.path.join(d2, "round.kicad_pcb")
+        with open(p2, "w", encoding="utf-8") as f:
+            f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                    '\t(layers (0 "F.Cu" signal) (44 "Edge.Cuts" user))\n\t(net 0 "")\n'
+                    '\t(gr_circle (center 50 50) (end 100 50) (layer "Edge.Cuts") (width 0.1))\n'
+                    '\t(gr_circle (center 20 20) (end 21.6 20) (layer "Edge.Cuts") (width 0.1))\n'
+                    ')\n')
+        rholes = load_board(p2).holes
+        check(len(rholes) == 1 and abs(rholes[0][2] - 1.6) < 1e-6,
+              f"a round board's OUTLINE circle is excluded; only the interior "
+              f"Ø3.2 hole is a keep-out ({len(rholes)} hole(s))")
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
+
+
 if __name__ == "__main__":
     checked = 0
 
@@ -312,6 +366,7 @@ if __name__ == "__main__":
     check_parser(brd)
     check_courtyards()
     check_sheets()
+    check_holes()
     checked += 1
 
     # Third-party bench boards (gitignored; skipped on a fresh clone) exercise

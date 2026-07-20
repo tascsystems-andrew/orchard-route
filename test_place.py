@@ -363,6 +363,92 @@ if __name__ == "__main__":
     finally:
         shutil.rmtree(cyd, ignore_errors=True)
 
+    print("=== mounting-hole keep-outs (finding A) ===")
+    # rpart courtyard is 3.5 x 1.5 centred on (x, y). A part ON a hole circle is
+    # infeasible; one clear of it is fine.
+    on = PlacementModel([rpart("K", 10.0, 10.0, ("N1", "N2"))],
+                        (0.0, 0.0, 30.0, 20.0), keepouts=[(10.0, 10.0, 3.0)])
+    check(any("mounting-hole" in s for s in on.problems(on.initial_states())),
+          "a courtyard sitting on a mounting-hole keep-out is flagged infeasible")
+    off = PlacementModel([rpart("K", 25.0, 15.0, ("N1", "N2"))],
+                         (0.0, 0.0, 30.0, 20.0), keepouts=[(10.0, 10.0, 3.0)])
+    check(not any("mounting-hole" in s for s in off.problems(off.initial_states())),
+          "a courtyard clear of the keep-out is fine")
+    # circle beats the bbox: a courtyard tucked past the hole's CORNER (inside
+    # the keep-out's bbox but outside its circle) is allowed — the reason the
+    # keep-out is circular, not a square.
+    from place import _rect_circle_overlap
+    corner = (13.0, 12.0, 14.0, 13.0)   # nearest pt (13,12), dist 3.6 from (10,10)
+    check(not _rect_circle_overlap(corner, 10.0, 10.0, 3.5)
+          and _rect_circle_overlap((10.0, 10.0, 11.0, 11.0), 10.0, 10.0, 3.5),
+          "the keep-out is a circle: a rect past its corner clears, one over its "
+          "centre does not")
+
+    print("=== minimum clearance gap (finding B) ===")
+    # A right edge = 5+1.75 = 6.75; B left edge = 8.5-1.75 = 6.75 -> gap 0 (abut).
+    a = rpart("A", 5.0, 5.0, ("N1", "N2"))
+    b = rpart("B", 8.5, 5.0, ("N3", "N4"))
+    g0 = PlacementModel([a, b], (0.0, 0.0, 30.0, 20.0), min_gap_mm=0.0)
+    check(not any(("within" in s or "overlap" in s) for s in
+                  g0.problems(g0.initial_states())),
+          "abutting courtyards are legal at min_gap=0 (the old behaviour)")
+    g5 = PlacementModel([a, b], (0.0, 0.0, 30.0, 20.0), min_gap_mm=0.5)
+    check(any("within 0.5 mm" in s for s in g5.problems(g5.initial_states())),
+          "abutting courtyards (0 gap) are REJECTED when 0.5 mm clearance is "
+          "required — touching = 0 clearance = a DRC crash")
+    far = rpart("B", 9.5, 5.0, ("N3", "N4"))   # left edge 7.75 -> gap 1.0 mm
+    g5ok = PlacementModel([a, far], (0.0, 0.0, 30.0, 20.0), min_gap_mm=0.5)
+    check(not any("within" in s for s in g5ok.problems(g5ok.initial_states())),
+          "a 1.0 mm gap satisfies the 0.5 mm requirement")
+    from place import _gap
+    check(abs(_gap(part_courtyard(a), part_courtyard(b))) < 1e-9
+          and abs(_gap(part_courtyard(a), part_courtyard(far)) - 1.0) < 1e-9,
+          "the closest-approach gap is measured exactly (0.0 abutting, 1.0 apart)")
+
+    print("=== the SEARCH path (judge/anneal) honours keep-outs + min-gap ===")
+    # problems() is the repair walk; judge() gates every candidate the annealer
+    # accepts into the elite pool. Exercise judge() by running a real anneal with
+    # a keep-out and a nonzero min-gap, then assert EVERY shipped elite honours
+    # both — so a regression that drops either check from the search path fails.
+    from place import _rect_circle_overlap
+    aps = [rpart(f"P{i}", 3.0 + 4.0 * i, 4.0, (f"N{i}a", f"N{i}b"))
+           for i in range(4)]
+    res = anneal_region(aps, (0.0, 0.0, 30.0, 20.0), keepouts=[(15.0, 12.0, 3.0)],
+                        min_gap_mm=0.4, seed=0, sweeps=80)
+    check(bool(res.elites), f"anneal produced elites with a keep-out + min-gap "
+                            f"({len(res.elites)})")
+    hole_hits = gap_viols = 0
+    for el in res.elites:
+        cts = [court_of(*el.placements[p.ref]) for p in aps]
+        hole_hits += sum(_rect_circle_overlap(c, 15.0, 12.0, 3.0) for c in cts)
+        for i in range(len(cts)):
+            for j in range(i + 1, len(cts)):
+                if _gap(cts[i], cts[j]) < 0.4 - 1e-6:
+                    gap_viols += 1
+    check(hole_hits == 0,
+          f"every elite clears the mounting-hole keep-out in the SEARCH path, "
+          f"not just problems() ({hole_hits} hits)")
+    check(gap_viols == 0,
+          f"every elite honours the 0.4 mm min-gap in the search path "
+          f"({gap_viols} violations)")
+
+    # Direct judge() probes — deterministic, so they catch a dropped check that
+    # the anneal's HPWL spreading would otherwise hide. A/B courtyards 0.2 mm
+    # apart: judge() accepts at min_gap=0, rejects at 0.4; a courtyard on a
+    # keep-out is rejected. (Exercises the exact judge() branches, not emergence.)
+    two = [rpart("A", 5.0, 5.0, ("n1", "n2")), rpart("B", 8.7, 5.0, ("n3", "n4"))]
+    feas0 = PlacementModel(two, (0.0, 0.0, 30.0, 20.0), min_gap_mm=0.0).judge(
+        [(5.0, 5.0, 0.0), (8.7, 5.0, 0.0)])[0]
+    feas4 = PlacementModel(two, (0.0, 0.0, 30.0, 20.0), min_gap_mm=0.4).judge(
+        [(5.0, 5.0, 0.0), (8.7, 5.0, 0.0)])[0]
+    check(feas0 and not feas4,
+          "judge() accepts a 0.2 mm gap at min_gap=0 and REJECTS it at 0.4 — the "
+          "min-gap branch of the search gate is live")
+    fk = PlacementModel([rpart("K", 15.0, 10.0, ("n1", "n2"))],
+                        (0.0, 0.0, 30.0, 20.0), keepouts=[(15.0, 10.0, 3.0)]).judge(
+        [(15.0, 10.0, 0.0)])[0]
+    check(not fk, "judge() rejects a courtyard sitting on a keep-out")
+
     print("=== net weights via writeback's class loader ===")
     w = net_weights_from_project(AMP, ["GND", "B+250"])
     check(w == {"GND": 1.0, "B+250": 1.0},

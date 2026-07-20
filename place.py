@@ -148,6 +148,35 @@ def _overlap(a, b):
             a[1] < b[3] - 1e-9 and b[1] < a[3] - 1e-9)
 
 
+def _gap(a, b):
+    """Minimum distance between two axis-aligned rects — 0 if they touch or
+    overlap. This is the clearance a DRC check measures between two courtyards."""
+    dx = max(a[0] - b[2], b[0] - a[2], 0.0)
+    dy = max(a[1] - b[3], b[1] - a[3], 0.0)
+    return math.hypot(dx, dy)
+
+
+def _too_close(a, b, min_gap):
+    """Two courtyards that overlap OR sit closer than min_gap. With min_gap <= 0
+    this is exactly _overlap (edge-touching allowed); with min_gap > 0 a real
+    clearance gap is required — two courtyards that merely abut have ZERO
+    clearance between the parts, which KiCad DRC flags (finding B)."""
+    if min_gap <= 1e-9:                 # guard agrees with the tolerance below,
+        return _overlap(a, b)           # so a sub-nm gap can never mask overlap
+    return _gap(a, b) < min_gap - 1e-9
+
+
+def _rect_circle_overlap(rect, cx, cy, r):
+    """True when an axis-aligned rect and a circle (centre cx,cy, radius r)
+    intersect — the closest point on the rect to the centre lies within r.
+    Mounting-hole keep-outs are circular (a hole + its screw-head clearance),
+    not rectangular, so a courtyard clears a corner of the hole it would fail a
+    bbox test on."""
+    nx = min(max(cx, rect[0]), rect[2])
+    ny = min(max(cy, rect[1]), rect[3])
+    return (nx - cx) ** 2 + (ny - cy) ** 2 < r * r - 1e-12
+
+
 def _local_geometry(part, margin_mm):
     """(pad terminals in footprint-local frame, local courtyard rect).
 
@@ -203,9 +232,9 @@ class PlacementModel:
     with the parts list."""
 
     def __init__(self, parts, region, constraints=(), *, obstacles=(),
-                 fixed_points=None, net_weights=None,
+                 keepouts=(), fixed_points=None, net_weights=None,
                  margin_mm=COURTYARD_MARGIN_MM, edge_tol_mm=1.0,
-                 penalty_scale_mm=10.0):
+                 penalty_scale_mm=10.0, min_gap_mm=0.0):
         self.parts = list(parts)
         self.refs = [p.ref for p in self.parts]
         if len(set(self.refs)) != len(self.refs):
@@ -220,7 +249,16 @@ class PlacementModel:
         self.margin_mm = float(margin_mm)
         self.edge_tol_mm = float(edge_tol_mm)
         self.penalty_scale_mm = float(penalty_scale_mm)
+        # required clearance GAP between courtyards (and between a courtyard and
+        # a frozen obstacle) — not just non-overlap; touching = 0 clearance = a
+        # DRC crash (finding B). 0 keeps the old "no overlap" behaviour.
+        self.min_gap_mm = float(min_gap_mm)
         self.obstacles = [tuple(float(v) for v in r) for r in obstacles]
+        # circular mounting-hole keep-outs (cx, cy, radius) — hole + screw-head
+        # clearance, already inflated by the caller. Movable courtyards are
+        # hard-rejected against these, exactly like the frozen obstacles.
+        self.keepouts = [(float(cx), float(cy), float(r))
+                         for cx, cy, r in keepouts]
         self.constraints = parse_constraints(constraints,
                                              known_refs=set(self.refs))
         self.home = {p.ref: (p.x_mm, p.y_mm, p.rot_deg) for p in self.parts}
@@ -269,15 +307,21 @@ class PlacementModel:
             if x0 < rx - 1e-9 or y0 < ry - 1e-9 \
                     or x1 > rx + rw + 1e-9 or y1 > ry + rh + 1e-9:
                 out.append(f"{self.refs[i]} courtyard leaves the region fence")
+        g = self.min_gap_mm
+        near = " overlap" if g <= 0 else f" are within {g:g} mm"
         for i in range(len(courts)):
             for j in range(i + 1, len(courts)):
-                if _overlap(courts[i], courts[j]):
+                if _too_close(courts[i], courts[j], g):
                     out.append(f"{self.refs[i]} and {self.refs[j]} "
-                               f"courtyards overlap")
+                               f"courtyards{near}")
             for ob in self.obstacles:
-                if _overlap(courts[i], ob):
-                    out.append(f"{self.refs[i]} courtyard overlaps a frozen "
-                               f"obstacle at ({ob[0]:.2f}, {ob[1]:.2f})")
+                if _too_close(courts[i], ob, g):
+                    out.append(f"{self.refs[i]} courtyard {near.strip()} a "
+                               f"frozen obstacle at ({ob[0]:.2f}, {ob[1]:.2f})")
+            for cx, cy, hr in self.keepouts:
+                if _rect_circle_overlap(courts[i], cx, cy, hr):
+                    out.append(f"{self.refs[i]} courtyard sits on a mounting-"
+                               f"hole keep-out at ({cx:.2f}, {cy:.2f})")
         for c in evaluate_constraints(self.constraints,
                                       self.placements(states),
                                       dict(zip(self.refs, courts)),
@@ -298,10 +342,13 @@ class PlacementModel:
                     or r[2] > rx + rw + 1e-9 or r[3] > ry + rh + 1e-9:
                 return False, math.inf, math.inf, math.inf
             for ob in self.obstacles:
-                if _overlap(r, ob):
+                if _too_close(r, ob, self.min_gap_mm):
+                    return False, math.inf, math.inf, math.inf
+            for cx, cy, hr in self.keepouts:
+                if _rect_circle_overlap(r, cx, cy, hr):
                     return False, math.inf, math.inf, math.inf
             for prev in courts:
-                if _overlap(r, prev):
+                if _too_close(r, prev, self.min_gap_mm):
                     return False, math.inf, math.inf, math.inf
             courts.append(r)
         checks = evaluate_constraints(self.constraints,
@@ -351,9 +398,9 @@ def _distinct(p1, p2, grid_mm):
 
 
 def anneal_region(parts, region, constraints=(), *, obstacles=(),
-                  fixed_points=None, net_weights=None,
+                  keepouts=(), fixed_points=None, net_weights=None,
                   grid_mm=0.5, margin_mm=COURTYARD_MARGIN_MM,
-                  edge_tol_mm=1.0, penalty_scale_mm=10.0,
+                  edge_tol_mm=1.0, penalty_scale_mm=10.0, min_gap_mm=0.0,
                   seed=0, pool_size=8, sweeps=200, proposals_per_sweep=None,
                   t0=None, cool=0.95, reheat_factor=8.0, stall_sweeps=15):
     """Explore placements of parts inside a region fence; return the elite
@@ -377,9 +424,11 @@ def anneal_region(parts, region, constraints=(), *, obstacles=(),
     diagnostics-first contract.
     """
     model = PlacementModel(parts, region, constraints, obstacles=obstacles,
-                           fixed_points=fixed_points, net_weights=net_weights,
+                           keepouts=keepouts, fixed_points=fixed_points,
+                           net_weights=net_weights,
                            margin_mm=margin_mm, edge_tol_mm=edge_tol_mm,
-                           penalty_scale_mm=penalty_scale_mm)
+                           penalty_scale_mm=penalty_scale_mm,
+                           min_gap_mm=min_gap_mm)
     rng = random.Random(seed)
     rx, ry, rw, rh = model.region
     g = float(grid_mm)
