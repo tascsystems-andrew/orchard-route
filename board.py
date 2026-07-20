@@ -117,6 +117,14 @@ class Board:
                                   # placed on. A back-side body cannot collide
                                   # with a front-side body in XY (opposite sides);
                                   # its through-hole pads still block both layers.
+    footprint_heights: tuple = ()  # one entry per footprint IN _footprints()
+                                  # ORDER: above-board height mm parsed from the
+                                  # footprint (height property / descr / tags) or
+                                  # None. The z-clearance check reads it; None is
+                                  # flagged, never assumed to fit.
+    footprint_fpids: tuple = ()   # one entry per footprint IN _footprints()
+                                  # ORDER: the library id "LIB:NAME" — the key a
+                                  # heights table / common-family heuristic uses.
     holes: tuple = ()             # (cx, cy, radius) per board mounting hole
                                   # (gr_circle on Edge.Cuts / User layers). The
                                   # placer keeps courtyards off these, inflated
@@ -374,6 +382,72 @@ def _footprint_side(fp):
     if node is not None and len(node) > 1 and str(node[1]) == "B.Cu":
         return "B"
     return "F"
+
+
+#: "height=16mm" / "height 16mm" / "height: 16 mm" in a descr or tags string.
+_HEIGHT_RE = re.compile(r"height\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*mm", re.I)
+_NUM_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)")
+
+
+def _first_num(s):
+    m = _NUM_RE.search(s or "")
+    return float(m.group(1)) if m else None
+
+
+def _parse_height_text(s):
+    """The component height in mm stated in a free-text descr/tags string, or
+    None. KiCad standard-library THT parts state it ("diameter=10mm, height=16mm"
+    on electrolytics; "4W" power resistors give "length*width*height=20*6.4*6.4
+    mm^3"). The second form is a PRODUCT, not a plain height — a naive match on
+    "height=20" would read the LENGTH — so a match flanked by '*' is rejected and
+    the part is left unknown (honest) rather than mis-measured."""
+    if not s:
+        return None
+    for m in _HEIGHT_RE.finditer(s):
+        pre = s[m.start() - 1] if m.start() > 0 else " "
+        post = s[m.end(1)] if m.end(1) < len(s) else " "
+        if pre == "*" or post == "*":       # part of an l*w*h=a*b*c product
+            continue
+        v = float(m.group(1))
+        if v > 0:
+            return v
+    return None
+
+
+def _footprint_height(fp):
+    """The component's above-board HEIGHT in mm, figured from what the footprint
+    already carries — or None when it cannot be known (then a two-sided run flags
+    it rather than assuming it fits under the enclosure). Priority: an explicit
+    height property (KiCad/Digikey 'MAXIMUM_PACKAGE_HEIGHT', or any *Height*
+    field), then a 'height=Nmm' in the (descr)/(tags). The tall parts that
+    actually threaten a back-side gap (electrolytics, power resistors, TO-220)
+    are exactly the ones whose library footprints state a height, so this reads
+    the ones that matter; the rest are left for an fpid heights table or a flag,
+    never guessed."""
+    for prop in _kids(fp, "property"):
+        if len(prop) >= 3 and isinstance(prop[1], str) \
+                and "height" in str(prop[1]).lower():
+            h = _first_num(str(prop[2]))    # the field NAME already says height
+            if h and h > 0:
+                return h
+    for tag in ("descr", "tags"):
+        node = _kid(fp, tag)
+        if node is not None and len(node) > 1 and isinstance(node[1], str):
+            h = _parse_height_text(str(node[1]))
+            if h:
+                return h
+    return None
+
+
+def _footprint_fpid(fp):
+    """The footprint's library id, e.g. "Capacitor_SMD:C_0805_2012Metric" — the
+    first atom of the (footprint "LIB:NAME" ...) node. This is the key an fpid
+    heights table and the common-family heuristic use, because dozens of parts
+    share one fpid (Voxy: 496 parts, 45 fpids), so a height stated per fpid
+    covers them all. "" when absent (KiCad 5 (module) with no id)."""
+    if len(fp) > 1 and isinstance(fp[1], str):
+        return str(fp[1])
+    return ""
 
 
 def _hole_layer(g):
@@ -765,6 +839,8 @@ def load_board(path: str) -> Board:
     courtyards = tuple(_footprint_courtyard(fp) for fp in _footprints(root))
     sheets = tuple(_footprint_sheet(fp) for fp in _footprints(root))
     sides = tuple(_footprint_side(fp) for fp in _footprints(root))
+    heights = tuple(_footprint_height(fp) for fp in _footprints(root))
+    fpids = tuple(_footprint_fpid(fp) for fp in _footprints(root))
     return Board(path=path, origin_mm=origin, size_mm=size,
                  copper_layers=copper_layers, nets=nets,
                  pads=pads, tracks=tracks, vias=vias,
@@ -772,4 +848,6 @@ def load_board(path: str) -> Board:
                  footprint_courtyards=courtyards,
                  footprint_sheets=sheets,
                  footprint_sides=sides,
+                 footprint_heights=heights,
+                 footprint_fpids=fpids,
                  holes=tuple(_board_holes(root, size)))

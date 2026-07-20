@@ -1936,6 +1936,61 @@ def _list_courtyards(board_path, refs=None):
     return 0
 
 
+def _list_heights(board_path, refs=None, overrides_path=None):
+    """Print each footprint's resolved above-board height and its SOURCE — the
+    z-clearance inspector (finding §3). Heights come from a designer override
+    (by fpid or ref), else the footprint's own descr/property, else a
+    conservative family upper bound, else UNKNOWN. This makes the two-sided
+    precondition visible: run it before relying on a back-side placement to see
+    exactly which parts have a real height and which the tool cannot vouch for.
+
+    [measured] = the footprint stated it or you overrode it; [family-max] = a
+    conservative upper bound for the package family (safe to pass a part on, but
+    not a measured value); [UNKNOWN] = flagged, never assumed to fit."""
+    import heights as H
+    from place import parts_from_board
+    overrides = H.load_overrides(overrides_path) if overrides_path else {}
+    parts = parts_from_board(board_path)
+    if refs is None:
+        keys = sorted(parts)
+    else:
+        keys = []
+        for k in refs:
+            m = [u for u in sorted(parts) if u == k or u.split("#")[0] == k]
+            keys.extend(m or [k])
+        keys = list(dict.fromkeys(keys))
+    print(f"board       : {os.path.basename(board_path)}"
+          + (f"  (+overrides {os.path.basename(overrides_path)})"
+             if overrides_path else ""))
+    n_meas = n_fam = n_unk = 0
+    rows = []
+    for k in keys:
+        p = parts.get(k)
+        if p is None:
+            rows.append(f"  {k:<10} (not on this board)")
+            continue
+        h, src = H.resolve(k, p.fpid, p.height_mm, overrides)
+        if src in ("override:ref", "override:fpid", "footprint"):
+            tag = "measured"
+            n_meas += 1
+        elif src == "family-max":
+            tag = "family-max"
+            n_fam += 1
+        else:
+            tag = "UNKNOWN"
+            n_unk += 1
+        hs = f"{h:5.1f} mm" if h is not None else "   ?   "
+        rows.append(f"  {k:<10} {p.side}  {hs}  [{tag:<10}] {(p.fpid or '')[:40]}")
+    print(f"heights     : {len(keys)} footprint(s) — above-board mm and source; "
+          f"[family-max] = conservative upper bound, [UNKNOWN] = flagged")
+    for row in rows:
+        print(row)
+    print(f"summary     : {n_meas} measured/override, {n_fam} family-max "
+          f"(upper bound), {n_unk} UNKNOWN (flagged — give a height override or "
+          f"add height=Nmm to the footprint)")
+    return 0
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
@@ -1961,6 +2016,15 @@ def main(argv=None):
                     help="print every footprint's courtyard (ref, w x h, area, "
                          "and whether it is the REAL F.CrtYd or a pad-bbox "
                          "proxy), then exit. Optionally filter with --components")
+    ap.add_argument("--list-heights", action="store_true",
+                    help="print every footprint's resolved above-board HEIGHT and "
+                         "its source (measured / conservative family-max / "
+                         "UNKNOWN), then exit — the two-sided z-clearance "
+                         "inspector. Filter with --components; feed --heights")
+    ap.add_argument("--heights", default=None, metavar="FILE",
+                    help="JSON height overrides (mm) by fpid \"LIB:NAME\" or ref; "
+                         "the precise, designer-owned height source that a "
+                         "BOM-enrichment step would emit")
     ap.add_argument("--constraint", action="append", default=[],
                     help="repeatable, e.g. \"min_distance(R4,C8,5)\"")
     ap.add_argument("--no-auto-fix-locked", action="store_true",
@@ -2013,6 +2077,10 @@ def main(argv=None):
         refs = None if args.components is None else \
             [c.strip() for c in args.components.split(",") if c.strip()]
         return _list_courtyards(args.board, refs)
+    if args.list_heights:
+        refs = None if args.components is None else \
+            [c.strip() for c in args.components.split(",") if c.strip()]
+        return _list_heights(args.board, refs, args.heights)
     if args.list_connections:
         refs = [c.strip() for c in args.list_connections.split(",") if c.strip()]
         adj = net_adjacency(args.board, refs)
