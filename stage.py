@@ -41,26 +41,28 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
+from collections import Counter
 
 from board import load_board
 from lattice import board_outline_regions
 from place import part_courtyard, parts_from_board
-from region import _rects_overlap, _scatter_pile
-from writeback import write_moved_copy
+from writeback import _refuse_source_dir, write_moved_copy
 
 # The margin boxes and their labels go on a NON-copper user layer so they never
 # touch DRC, the netlist, or (critically) Edge.Cuts — a group box on Edge.Cuts
 # would read back as a phantom board region. Cmts.User is in KiCad's default
-# stackup; if a board lacks it, generate() injects the declaration.
+# stackup; if a board lacks it, generate() injects the declaration at a free id.
 LABEL_LAYER = "Cmts.User"
-LABEL_LAYER_ORDINAL = 40                 # KiCad's canonical id for Cmts.User
+LABEL_LAYER_ORDINAL = 41                 # KiCad's canonical id for Cmts.User
+                                         # (40 is Dwgs.User); a free id is chosen
+                                         # at inject time if 41 is taken.
 
 MARGIN_GAP_MM = 10.0                     # clear air between board and the boxes
 BOX_GAP_MM = 6.0                         # clear air between adjacent group boxes
 BOX_PAD_MM = 3.0                         # padding inside a box around its parts
-GRID_MM = 1.0                            # scatter grid step inside a box
-PACK_EFFICIENCY = 0.55                   # courtyard-area / box-area target
+GRID_MM = 1.0                            # gap between packed parts in a box
 
 # Density preflight thresholds (courtyard area / fence area). Past WARN a single
 # region is LIKELY infeasible once the placement grid, courtyard margins and
@@ -128,6 +130,12 @@ def _load_partition(path):
             raise ValueError(f"{path}: each group needs 'name' and 'refs'")
         if not isinstance(g["refs"], list) or not g["refs"]:
             raise ValueError(f"{path}: group {g['name']!r} has no refs")
+        within = [r for r in set(g["refs"]) if g["refs"].count(r) > 1]
+        if within:
+            raise ValueError(
+                f"{path}: group {g['name']!r} lists ref(s) {sorted(within)} more "
+                f"than once — a typo'd duplicate would double-count in density "
+                f"and emit duplicate anchors")
         dup = seen & set(g["refs"])
         if dup:
             raise ValueError(
@@ -139,19 +147,44 @@ def _load_partition(path):
     return data
 
 
-def _box_for(candidates, courts):
-    """The (width, height) of a box that loosely holds `candidates`, sized so
-    _scatter_pile has enough non-overlapping grid slots for all of them."""
-    if not candidates:
-        return (0.0, 0.0)
-    cw = max(courts[r][2] - courts[r][0] for r in candidates)
-    ch = max(courts[r][3] - courts[r][1] for r in candidates)
-    step_x = math.ceil((cw + GRID_MM) / GRID_MM) * GRID_MM
-    step_y = math.ceil((ch + GRID_MM) / GRID_MM) * GRID_MM
-    n = len(candidates)
+def _courtyard_offset(part):
+    """(dx, dy) from the part's ORIGIN (its `at` position) to its courtyard-bbox
+    center. KiCad footprint origins are routinely off-centre — region.py's own
+    _rel_courtyards calls this the common case (Voxy's grid-stopper extends
+    1.45 mm one way, 9.07 mm the other). Placing the origin at `target - offset`
+    lands the COURTYARD (not pin 1) on `target`, so the box packs what the human
+    actually sees."""
+    x0, y0, x1, y1 = part_courtyard(part)
+    return ((x0 + x1) / 2.0 - part.x_mm, (y0 + y1) / 2.0 - part.y_mm)
+
+
+def _grid_layout(refs, by_ref):
+    """(cols, rows, step_x, step_y) for a near-square grid of cells each sized to
+    the LARGEST courtyard among `refs` plus a gap — so every part's courtyard
+    fits its own cell regardless of origin offset."""
+    cw = max(_courtyard_dims(by_ref[r])[0] for r in refs)
+    ch = max(_courtyard_dims(by_ref[r])[1] for r in refs)
+    step_x, step_y = cw + GRID_MM, ch + GRID_MM
+    n = len(refs)
     cols = max(1, math.ceil(math.sqrt(n * step_y / step_x)))
     rows = math.ceil(n / cols)
-    return (cols * step_x + 2 * BOX_PAD_MM, rows * step_y + 2 * BOX_PAD_MM)
+    return cols, rows, step_x, step_y
+
+
+def _pack_into_box(refs, by_ref, inner_x, inner_y, cols, step_x, step_y):
+    """Grid-pack `refs` so each part's COURTYARD sits centered in its own cell,
+    big courtyards first (a stable, deterministic order). The box was sized (by
+    _grid_layout) to hold every part, so this places ALL of them — no part is
+    silently left in the pile. Returns {ref: (x, y, rot)}."""
+    order = sorted(refs, key=lambda r: (-_courtyard_area(by_ref[r]), r))
+    out = {}
+    for i, r in enumerate(order):
+        col, row = i % cols, i // cols
+        cx = inner_x + (col + 0.5) * step_x
+        cy = inner_y + (row + 0.5) * step_y
+        ox, oy = _courtyard_offset(by_ref[r])
+        out[r] = (cx - ox, cy - oy, by_ref[r].rot_deg)
+    return out
 
 
 def _tile_boxes(sizes, origin_x, origin_y, strip_width):
@@ -195,7 +228,10 @@ def _inject_graphics(path, graphics_text):
     with open(path, encoding="utf-8") as f:
         text = f.read()
     if f'"{LABEL_LAYER}"' not in text:
-        # Declare the user layer just before the layer list's closing paren.
+        # Declare the user layer just before the layer list's closing paren, at
+        # an ordinal that is actually FREE — 41 (canonical Cmts.User) unless the
+        # board already uses it, else one past the highest existing id. A
+        # hardcoded 40 would collide with a board that declares Dwgs.User.
         marker = "(layers"
         i = text.find(marker)
         if i != -1:
@@ -208,7 +244,10 @@ def _inject_graphics(path, graphics_text):
                         break
                     depth -= 1
                 j += 1
-            decl = f'\n\t\t({LABEL_LAYER_ORDINAL} "{LABEL_LAYER}" user)'
+            used = set(int(m) for m in re.findall(r'\(\s*(\d+)\s+"', text[i:j]))
+            ordinal = LABEL_LAYER_ORDINAL if LABEL_LAYER_ORDINAL not in used \
+                else max(used, default=LABEL_LAYER_ORDINAL) + 1
+            decl = f'\n\t\t({ordinal} "{LABEL_LAYER}" user)'
             text = text[:j] + decl + "\n\t" + text[j:]
     end = text.rstrip()
     if not end.endswith(")"):
@@ -236,43 +275,45 @@ def generate(board_path, partition_path, out_dir):
             f"{os.path.basename(board_path)}: {', '.join(missing[:20])}"
             + (" ..." if len(missing) > 20 else ""))
 
-    courts = {p.ref: part_courtyard(p) for p in parts}
+    os.makedirs(out_dir, exist_ok=True)
+    staged = os.path.join(out_dir, os.path.basename(board_path))
+    # Guard EVERY write up front, not just write_moved_copy's, so the partition
+    # and .kicad_pro copies below can never land in the source dir either — the
+    # read-only rule must not depend on call ordering.
+    _refuse_source_dir(board_path, staged)
 
-    # A group's SCATTER candidates are its parts that carry no real position:
-    # off every board region AND not locked. On-board or locked parts are left
+    # A group's PILE candidates are its parts that carry no real position: off
+    # every board region AND not locked. On-board or locked parts are left
     # untouched (their position is information the human/tool already chose).
     def is_pile(ref):
         p = by_ref[ref]
         return not p.locked and _area_index_of(p, regions) is None
 
-    group_candidates = []
-    for g in data["groups"]:
-        cands = [r for r in g["refs"] if is_pile(r)]
-        group_candidates.append((g["name"], cands))
+    group_candidates = [(g["name"], [r for r in g["refs"] if is_pile(r)])
+                        for g in data["groups"]]
 
-    # Lay the boxes in a strip below the board, as wide as the board.
+    # Size each group's box for its candidates, then tile the boxes in a strip
+    # below the board, as wide as the board.
     bx0, by0, bx1, by1 = _board_bbox(parts, regions)
     strip_w = max(bx1 - bx0, 50.0)
-    sizes = [_box_for(cands, courts) if cands else (0.0, 0.0)
-             for _name, cands in group_candidates]
-    rects = _tile_boxes([s for s in sizes], bx0, by1 + MARGIN_GAP_MM, strip_w)
+    layouts, sizes = [], []
+    for _name, cands in group_candidates:
+        if not cands:
+            layouts.append(None); sizes.append((0.0, 0.0)); continue
+        cols, rows, sx, sy = _grid_layout(cands, by_ref)
+        layouts.append((cols, rows, sx, sy))
+        sizes.append((cols * sx + 2 * BOX_PAD_MM, rows * sy + 2 * BOX_PAD_MM))
+    rects = _tile_boxes(sizes, bx0, by1 + MARGIN_GAP_MM, strip_w)
 
     placements, labelled = {}, []
-    for (name, cands), box in zip(group_candidates, rects):
+    for (name, cands), lay, box in zip(group_candidates, layouts, rects):
         if not cands:
             continue
         labelled.append((name, box))
-        rx0, ry0, rx1, ry1 = box
-        region_rect = (rx0 + BOX_PAD_MM, ry0 + BOX_PAD_MM,
-                       rx1 - rx0 - 2 * BOX_PAD_MM, ry1 - ry0 - 2 * BOX_PAD_MM)
-        live = {r: by_ref[r] for r in cands}
-        lc = {r: courts[r] for r in cands}
-        _scatter_pile(cands, set(), live, lc, region_rect, GRID_MM, obstacles=())
-        for r in cands:
-            placements[r] = (live[r].x_mm, live[r].y_mm, live[r].rot_deg)
+        cols, _rows, sx, sy = lay
+        placements.update(_pack_into_box(
+            cands, by_ref, box[0] + BOX_PAD_MM, box[1] + BOX_PAD_MM, cols, sx, sy))
 
-    os.makedirs(out_dir, exist_ok=True)
-    staged = os.path.join(out_dir, os.path.basename(board_path))
     write_moved_copy(board_path, staged, placements)     # refuses source dir
     if labelled:
         _inject_graphics(staged, _graphics_block(labelled))
@@ -322,6 +363,13 @@ def _density_preflight(parts_by_area, regions):
 def harvest(staged_dir_or_board, partition_path, out_path):
     """Read the human's edits on a staged board back into an enriched partition,
     and run the density preflight. Returns the enriched dict."""
+    # harvest only ever writes an enriched JSON. Refuse a board path as the
+    # output so `--harvest B.kicad_pcb --out B.kicad_pcb` cannot truncate a
+    # board — the one write not covered by _refuse_source_dir.
+    if out_path.endswith((".kicad_pcb", ".kicad_pro")):
+        raise ValueError(
+            f"--out {out_path!r} looks like a KiCad board/project; harvest writes "
+            f"an enriched partition JSON — choose a .json path")
     if os.path.isdir(staged_dir_or_board):
         boards = [f for f in os.listdir(staged_dir_or_board)
                   if f.endswith(".kicad_pcb")]
@@ -344,50 +392,48 @@ def harvest(staged_dir_or_board, partition_path, out_path):
     by_ref = {p.ref: p for p in parts}
     regions = board_outline_regions(load_board(board_path))
 
-    parts_by_area, moved = {}, 0
+    # Each part's physical area now (None = still in the margin).
+    area_of = {p.ref: _area_index_of(p, regions) for p in parts}
+    group_area, moved = {}, 0
     for g in data["groups"]:
         present = [by_ref[r] for r in g["refs"] if r in by_ref]
-        # Where does the group sit now? A group whose CENTROID landed inside an
-        # area was dragged there; one still in the margin keeps its proposal.
-        placed = [p for p in present if _area_index_of(p, regions) is not None]
+        # Where does the group sit now? MAJORITY vote over its parts' physical
+        # areas — the area holding the most of them wins. A centroid can land in
+        # a THIRD area (or the gap) when parts straddle two boards, assigning the
+        # group somewhere none of its parts are; the vote can't. A group still
+        # wholly in the margin (no part in any area) keeps its proposal.
+        votes = Counter(area_of[p.ref] for p in present
+                        if area_of[p.ref] is not None)
         harvested = g.get("area")
-        if placed:
-            cx = sum(p.x_mm for p in placed) / len(placed)
-            cy = sum(p.y_mm for p in placed) / len(placed)
-            for i, r in enumerate(regions):
-                x0, y0, x1, y1 = r.bounds
-                if x0 <= cx <= x1 and y0 <= cy <= y1:
-                    if harvested != i:
-                        moved += 1
-                    harvested = i
-                    break
+        if votes:
+            top = votes.most_common(1)[0][0]
+            if harvested != top:
+                moved += 1
+            harvested = top
         g["area"] = harvested
+        for r in g["refs"]:
+            group_area[r] = harvested
 
         # LOCKED parts inside an area are fixed anchors — an exact position the
         # per-area region.py run must honour, not re-place.
-        anchors = []
-        for p in present:
-            ai = _area_index_of(p, regions)
-            if p.locked and ai is not None:
-                anchors.append({"ref": p.ref, "x": round(p.x_mm, 4),
-                                "y": round(p.y_mm, 4), "rot": round(p.rot_deg, 4)})
+        anchors = [{"ref": p.ref, "x": round(p.x_mm, 4),
+                    "y": round(p.y_mm, 4), "rot": round(p.rot_deg, 4)}
+                   for p in present if p.locked and area_of[p.ref] is not None]
         if anchors:
             g["anchors"] = anchors
         elif "anchors" in g:
             del g["anchors"]
 
-        # Accumulate this group's parts against its (harvested) area for density.
-        if harvested is not None and 0 <= harvested < len(regions):
-            parts_by_area.setdefault(harvested, []).extend(present)
-
-    # Parts placed inside an area independently of any group assignment still
-    # occupy it — count them too, without double-counting group members.
-    counted = {p.ref for ps in parts_by_area.values() for p in ps}
+    # Density counts each part ONCE, against the area it physically occupies if
+    # it has been placed, else against its group's assigned area (a margin part
+    # planned for that area). This keeps a straddler's parts on the areas that
+    # actually hold them rather than on a mis-voted one.
+    parts_by_area = {}
     for p in parts:
-        ai = _area_index_of(p, regions)
-        if ai is not None and p.ref not in counted:
-            parts_by_area.setdefault(ai, []).append(p)
-            counted.add(p.ref)
+        target = area_of[p.ref] if area_of[p.ref] is not None \
+            else group_area.get(p.ref)
+        if target is not None and 0 <= target < len(regions):
+            parts_by_area.setdefault(target, []).append(p)
 
     rows, warnings = _density_preflight(parts_by_area, regions)
 

@@ -61,20 +61,24 @@ PILE = [(-30.0, -30.0), (-22.0, -30.0), (-14.0, -30.0), (-30.0, -22.0),
         (-14.0, -14.0), (-30.0, -6.0)]
 
 
-def write_board(path, footprints):
-    """footprints: list of (ref, x, y, locked_bool)."""
+def write_board(path, footprints, areas=(AREA0, AREA1), head=PCB_HEAD):
+    """footprints: (ref, x, y, locked[, pad_dx, pad_dy]) — pad_dx/dy offset the
+    single pad from the footprint origin, so the courtyard is off-centre."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    body = [PCB_HEAD, '\t(net 0 "")\n', '\t(net 1 "N")\n']
-    for x0, y0, x1, y1 in (AREA0, AREA1):
+    body = [head, '\t(net 0 "")\n', '\t(net 1 "N")\n']
+    for x0, y0, x1, y1 in areas:
         body.append(f'\t(gr_rect (start {x0} {y0}) (end {x1} {y1}) '
                     f'(layer "Edge.Cuts") (width 0.1))\n')
-    for ref, x, y, locked in footprints:
+    for fp in footprints:
+        ref, x, y, locked = fp[:4]
+        pad_dx = fp[4] if len(fp) > 4 else 0.0
+        pad_dy = fp[5] if len(fp) > 5 else 0.0
         lk = "\t\t(locked yes)\n" if locked else ""
         body.append(
             f'\t(footprint "R:R" (layer "F.Cu")\n'
             f'\t\t(at {x} {y})\n{lk}'
             f'\t\t(property "Reference" "{ref}")\n'
-            f'\t\t(pad "1" smd rect (at 0 0) (size {PAD} {PAD}) '
+            f'\t\t(pad "1" smd rect (at {pad_dx} {pad_dy}) (size {PAD} {PAD}) '
             f'(layers "F.Cu") (net 1 "N"))\n'
             f'\t)\n')
     body.append(")\n")
@@ -139,9 +143,20 @@ def test_generate():
           all(f'"{n}"' in txt for n in ("gain", "power"))
           and stage.LABEL_LAYER in txt,
           f"layer {stage.LABEL_LAYER}")
-    check("no group box sits on Edge.Cuts (would be a phantom region)",
-          "Edge.Cuts" in txt and txt.count("gr_rect") >= 2
-          and stage.LABEL_LAYER in txt)
+    # STRONG phantom-region check: a box emitted on Edge.Cuts would read back as
+    # an extra board region. The original board has 2; the staged board must too.
+    from board import load_board as _lb
+    from lattice import board_outline_regions as _bor
+    n_before = len(_bor(_lb(board)))
+    n_after = len(_bor(_lb(staged)))
+    check("staged board has the SAME outline-region count (no box on Edge.Cuts "
+          "-> no phantom region)", n_before == 2 and n_after == 2,
+          f"before {n_before}, after {n_after}")
+    box_rects = [l for l in txt.splitlines() if "gr_rect" in l and "stroke" in l]
+    check("every group-box gr_rect is on the label layer, none on Edge.Cuts",
+          box_rects and all(stage.LABEL_LAYER in l and "Edge.Cuts" not in l
+                            for l in box_rects),
+          f"{len(box_rects)} box rects")
     check("the partition was carried into the staged dir",
           os.path.isfile(os.path.join(staged_dir, "partition.json")))
     check("the SOURCE board is byte-identical (read-only honoured)",
@@ -282,12 +297,121 @@ def test_density_hard_vs_soft_threshold():
           any("area 1" in w and "IMPOSSIBLE" in w for w in w_hard), str(w_hard))
 
 
+def test_generate_boxes_off_centre_origin_parts():
+    print("=== generate: parts with off-centre origins are boxed, not stranded ===")
+    from place import part_courtyard
+    # C1 pad at origin; O1/O2 pad 9 mm off origin (Voxy's grid-stopper case).
+    fps = [("C1", -30.0, -30.0, False, 0.0, 0.0),
+           ("O1", -30.0, -22.0, False, 9.0, 0.0),
+           ("O2", -30.0, -14.0, False, 0.0, 9.0)]
+    board = write_board(os.path.join(OUT, "offc.kicad_pcb"), fps)
+    part = _write_partition(os.path.join(OUT, "offc.json"),
+                            {"groups": [{"name": "stoppers",
+                                         "refs": ["C1", "O1", "O2"], "area": 0}]})
+    staged_dir = os.path.join(OUT, "offc-staged")
+    shutil.rmtree(staged_dir, ignore_errors=True)
+    staged = stage.generate(board, part, staged_dir)
+    sp = parts_from_board(staged)
+    # every one — including the off-centre O1/O2 — has its COURTYARD in the
+    # margin box below the board, not left at its pile coordinate (~ -30).
+    def court_cy(p):
+        x0, y0, x1, y1 = part_courtyard(p)
+        return (y0 + y1) / 2.0
+    boxed = all(court_cy(sp[r]) > 40.0 for r in ("C1", "O1", "O2"))
+    check("all 3 parts (incl. 9 mm off-centre O1/O2) boxed into the margin",
+          boxed, f"cy: " + ", ".join(f"{r}={court_cy(sp[r]):.1f}"
+                                     for r in ("C1", "O1", "O2")))
+
+
+def test_harvest_straddle_uses_majority_vote():
+    print("=== harvest: a straddling group takes the MAJORITY area, not a centroid ===")
+    AL, AM, AR = (0, 0, 20, 20), (40, 0, 60, 20), (80, 0, 100, 20)
+    # 3 parts in area L (x<20), 2 in area R (x>80). Centroid x=(8+12+10+88+92)/5
+    # = 42, which lands in area M (40..60) — an area holding ZERO of them.
+    fps = [("STR1", 8.0, 10.0, False), ("STR2", 12.0, 10.0, False),
+           ("STR3", 10.0, 6.0, False), ("STR4", 88.0, 10.0, False),
+           ("STR5", 92.0, 10.0, False)]
+    board = write_board(os.path.join(OUT, "strad.kicad_pcb"), fps,
+                        areas=(AL, AM, AR))
+    part = _write_partition(os.path.join(OUT, "strad.json"), {"groups": [
+        {"name": "strad", "refs": ["STR1", "STR2", "STR3", "STR4", "STR5"],
+         "area": 1}]})
+    out = os.path.join(OUT, "strad-enriched.json")
+    data = stage.harvest(board, part, out)
+    check("straddling group takes the majority area 0 (3 parts), NOT the "
+          "centroid's empty area 1", data["groups"][0]["area"] == 0,
+          f"area={data['groups'][0]['area']}")
+
+
+def test_within_group_duplicate_ref_refused():
+    print("=== a ref listed twice within one group is refused ===")
+    board = base_board()
+    dup = _write_partition(os.path.join(OUT, "wdup.json"), {"groups": [
+        {"name": "a", "refs": ["G1", "G1", "G2"], "area": 0}]})
+    try:
+        stage.generate(board, dup, os.path.join(OUT, "wd"))
+        check("within-group duplicate ref is refused", False)
+    except ValueError as e:
+        check("within-group duplicate ref is refused",
+              "more than once" in str(e) and "G1" in str(e), str(e))
+
+
+def test_harvest_leaves_staged_board_unchanged():
+    print("=== harvest never writes the staged board (only the enriched json) ===")
+    board = base_board()
+    part = _write_partition(os.path.join(OUT, "partition.json"), PARTITION)
+    staged_dir = os.path.join(OUT, "staged-ro")
+    shutil.rmtree(staged_dir, ignore_errors=True)
+    staged = stage.generate(board, part, staged_dir)
+    before = sha256(staged)
+    stage.harvest(staged_dir, None, os.path.join(OUT, "ro-enriched.json"))
+    check("the staged board is byte-identical after harvest",
+          sha256(staged) == before)
+    # and harvest refuses to write over a board
+    try:
+        stage.harvest(staged_dir, None, os.path.join(OUT, "x.kicad_pcb"))
+        check("harvest refuses a .kicad_pcb --out", False)
+    except ValueError as e:
+        check("harvest refuses a .kicad_pcb --out", "writes an enriched" in str(e),
+              str(e))
+
+
+def test_layer_injection_picks_a_free_ordinal():
+    print("=== layer injection: no duplicate ordinal when Dwgs.User(40) exists ===")
+    import re
+    head = PCB_HEAD.replace('\t\t(44 "Edge.Cuts" user)\n',
+                            '\t\t(40 "Dwgs.User" user)\n\t\t(44 "Edge.Cuts" user)\n')
+    board = write_board(os.path.join(OUT, "dwgs.kicad_pcb"),
+                        [("P1", -30.0, -30.0, False)], head=head)
+    part = _write_partition(os.path.join(OUT, "dwgs.json"),
+                            {"groups": [{"name": "g", "refs": ["P1"], "area": 0}]})
+    staged_dir = os.path.join(OUT, "dwgs-staged")
+    shutil.rmtree(staged_dir, ignore_errors=True)
+    staged = stage.generate(board, part, staged_dir)
+    with open(staged, encoding="utf-8") as f:
+        txt = f.read()
+    ords = re.findall(r'\((\d+)\s+"[^"]+"\s+\w+\)', txt.split("(net")[0])
+    check("Cmts.User was added and no layer ordinal is duplicated",
+          "Cmts.User" in txt and len(ords) == len(set(ords)),
+          f"ordinals {ords}")
+    # and it still loads in our parser (regions unchanged = 2? this board has 1)
+    from board import load_board as _lb
+    from lattice import board_outline_regions as _bor
+    check("the staged board still parses with the 2 real board regions (no "
+          "phantom from the box)", len(_bor(_lb(staged))) == 2)
+
+
 if __name__ == "__main__":
     shutil.rmtree(OUT, ignore_errors=True)
     test_generate()
+    test_generate_boxes_off_centre_origin_parts()
     test_generate_refuses_source_dir_and_bad_partition()
+    test_within_group_duplicate_ref_refused()
     test_harvest_proposed_keeps_area_and_anchors_locked()
     test_harvest_drag_reassigns_area()
+    test_harvest_straddle_uses_majority_vote()
+    test_harvest_leaves_staged_board_unchanged()
+    test_layer_injection_picks_a_free_ordinal()
     test_density_preflight_both_directions()
     test_density_hard_vs_soft_threshold()
     print(f"\nRESULT: {'PASS' if not FAILED else 'FAIL ' + str(FAILED)}")
