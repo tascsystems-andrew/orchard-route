@@ -351,6 +351,11 @@ def test_errors():
           f"exception ({str(tiny.diagnostics['infeasible_reason'])[:70]}...)")
     check(tiny.diagnostics.get("suggested_expansion") is not None,
           "the infeasible path still suggests where to grow the fence")
+    # the enforced-by-default clearance is named on any infeasible run, so a
+    # driver whose placement stopped working checks --min-gap, not the wrong
+    # lever the repair walk happened to report (finding A/B review).
+    check("min-gap" in (tiny.diagnostics["infeasible_reason"] or ""),
+          "an infeasible run names the active min-gap clearance as a lever")
 
 
 # ── the acceptance test (REGION_SOLVER.md) ───────────────────────────────────
@@ -443,7 +448,7 @@ def test_geometry_warnings():
           f"the SOT-89s with custom heat-tab pads are detected "
           f"({len(custom)} such footprints on the board)")
     res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
-                          constraints=ACC_CONSTRAINTS, k=1,
+                          constraints=ACC_CONSTRAINTS, k=1, min_gap_mm=0.0,
                           out_dir=os.path.join(OUT_DIR, "warn"), sweeps=30)
     w = res.diagnostics.get("geometry_warnings") or []
     check(len(w) == 1 and set(w[0]["refs"]) == {"Q2", "Q3"},
@@ -462,9 +467,14 @@ def test_acceptance():
     before = sha256(GAIN_STAGE)
     out = os.path.join(OUT_DIR, "acceptance")
     t0 = time.perf_counter()
+    # min_gap_mm=0 here: the gain stage is a DELIBERATELY tight packing fixture
+    # (13 parts in a 20x50 fence), infeasible under the default 0.25 mm
+    # clearance gap. This test stresses the packer+router; the min-gap constraint
+    # is exercised on its own in test_place / test_min_gap.
     res = optimize_region(GAIN_STAGE, ACC_COMPONENTS, ACC_REGION,
                           constraints=ACC_CONSTRAINTS, k=5, pitch_mm=0.5,
                           layers=["F.Cu", "B.Cu"], out_dir=out, seed=0,
+                          min_gap_mm=0.0,
                           progress=lambda m: print("   " + m, flush=True))
     elapsed = time.perf_counter() - t0
 
@@ -945,6 +955,50 @@ def test_list_courtyards():
           "refs=None lists the whole board (header count matches)")
 
 
+def test_hole_keepouts():
+    """optimize_region wires board holes into circular keep-outs (finding A): the
+    inflated radius reaches diagnostics, placed courtyards clear the hole, and a
+    hole outside the fence is filtered out (gain_stage has no holes, so this is
+    the only coverage of the region-level wiring)."""
+    print("=== mounting-hole keep-outs through optimize_region ===")
+    from place import parts_from_board, part_courtyard, _rect_circle_overlap
+    src = os.path.join(SYN_DIR, "holes", "h.kicad_pcb")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    fps = "".join(
+        f'\t(footprint "R" (layer "F.Cu") (at {5 + 3 * i} 5)\n'
+        f'\t\t(property "Reference" "R{i}" (at 0 0 0) (layer "F.SilkS"))\n'
+        f'\t\t(pad "1" smd rect (at 0 0) (size 2 2) (layers "F.Cu") '
+        f'(net {i + 1} "N{i}")))\n' for i in range(6))
+    nets = "".join(f'\t(net {i} "N{i}")\n' for i in range(7))
+    with open(src, "w", encoding="utf-8") as f:
+        f.write('(kicad_pcb (version 20240108) (generator "t")\n'
+                '\t(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n'
+                + nets +
+                '\t(gr_rect (start 0 0) (end 40 40) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(gr_circle (center 20 20) (end 21.6 20) (layer "Edge.Cuts") (width 0.1))\n'
+                '\t(gr_circle (center 100 100) (end 101.6 100) (layer "Edge.Cuts") (width 0.1))\n'
+                + fps + ")\n")
+    res = optimize_region(src, ["R0", "R1", "R2", "R3", "R4", "R5"],
+                          (1.0, 1.0, 38.0, 38.0), k=2, sweeps=60, seed=0,
+                          hole_clearance_mm=3.0,
+                          out_dir=os.path.join(OUT_DIR, "holes"))
+    d = res.diagnostics
+    check(len(d["hole_keepouts"]) == 1
+          and abs(d["hole_keepouts"][0]["radius_mm"] - 4.6) < 1e-6,
+          f"only the IN-FENCE hole becomes a keep-out, inflated to r=1.6+3.0=4.6 "
+          f"(the far hole is filtered) ({d['hole_keepouts']})")
+    check(d.get("hole_clearance_mm") == 3.0 and d.get("min_gap_mm") == 0.25,
+          f"clearance settings reach diagnostics "
+          f"({d.get('hole_clearance_mm')}, {d.get('min_gap_mm')})")
+    check(bool(res.candidates),
+          f"parts place around the hole ({len(res.candidates)} candidates)")
+    clear = all(
+        not _rect_circle_overlap(part_courtyard(parts_from_board(c.board_copy)[r]),
+                                 20.0, 20.0, 4.6)
+        for c in res.candidates for r in ["R0", "R1", "R2", "R3", "R4", "R5"])
+    check(clear, "no placed courtyard intersects the hole keep-out")
+
+
 # ── driver ───────────────────────────────────────────────────────────────────
 
 def test_respect_positions():
@@ -1054,6 +1108,7 @@ TESTS = [("terminal", test_terminal_propagation), ("rank", test_ranking),
          ("pile_explicit", test_pile_explicit_required),
          ("pile_report", test_pile_report_vs_named_scatter),
          ("list_courtyards", test_list_courtyards),
+         ("hole_keepouts", test_hole_keepouts),
          ("preflight", test_preflight), ("warnings", test_geometry_warnings),
          ("respect_positions", test_respect_positions),
          ("acceptance", test_acceptance)]

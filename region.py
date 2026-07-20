@@ -85,7 +85,7 @@ from place import (COURTYARD_MARGIN_MM, PlacementModel, anneal_region,
 # the same geometry at rotations the part is not currently at, and a second
 # implementation of KiCad's CCW/Y-down convention in this file is exactly the
 # drift that produces two answers to one question.
-from place import _local_geometry, _world_rect
+from place import _local_geometry, _world_rect, _rect_circle_overlap
 from pathfinder import net_pads_for_board, paths_to_tracks, route_lattice
 from render import render_svg
 from writeback import (board_footprints, cap_track_widths,
@@ -909,7 +909,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                     via_weight_mm=VIA_WEIGHT_MM, clearance_mm=None,
                     class_weights=None, keep_work=False, progress=None,
                     route_kwargs=None, area=None, auto_fix_locked=True,
-                    respect_positions=False):
+                    respect_positions=False, hole_clearance_mm=3.0,
+                    min_gap_mm=0.25):
     """Place `components` inside `region` and prove each candidate by routing.
 
     board_path   : READ-ONLY source board
@@ -928,6 +929,16 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                    anchors — without the caller listing them (reported in
                    diagnostics.auto_fixed). False disables it (A/B only).
     constraints  : the closed constraints.py vocabulary (strings or dicts)
+    hole_clearance_mm : screw-head clearance kept clear around each board
+                   mounting hole (default 3.0 for M3), hole-edge outward. Board
+                   holes (Edge.Cuts/User gr_circle + MountingHole fp_circle)
+                   become circular keep-outs courtyards are rejected from.
+    min_gap_mm   : required clearance GAP between courtyards, and between a
+                   courtyard and a frozen obstacle (default 0.25) — NOT just
+                   non-overlap, since two abutting courtyards have zero clearance
+                   and KiCad DRC flags it. 0 reverts to plain no-overlap. If a
+                   run that used to place returns zero candidates, this default
+                   is the first knob to check (it's named in infeasible_reason).
     k            : candidates to ship; k*3 finalists are routed
     out_dir      : everything this call writes lands here
 
@@ -995,15 +1006,23 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
                               known_refs=movable)
 
     # 2 ── frozen furniture that intrudes into the fence
+    fence_rect = (region[0], region[1],
+                  region[0] + region[2], region[1] + region[3])
     obstacles, obstacle_refs = [], []
     for ref, part in sorted(all_parts.items()):
         if ref in movable:
             continue
         rect = part_courtyard(part)
-        if _rects_overlap(rect, (region[0], region[1],
-                                 region[0] + region[2], region[1] + region[3])):
+        if _rects_overlap(rect, fence_rect):
             obstacles.append(rect)
             obstacle_refs.append(ref)
+
+    # 2b ── mounting-hole keep-outs (finding A): each board hole (gr_circle),
+    # inflated by screw-head clearance, that reaches into the fence. Movable
+    # courtyards are hard-rejected against these — the fence-edge mechanism, but
+    # circular. A hole whose inflated circle never enters the fence is skipped.
+    keepouts = [(cx, cy, r + hole_clearance_mm) for cx, cy, r in brd.holes
+                if _rect_circle_overlap(fence_rect, cx, cy, r + hole_clearance_mm)]
 
     # 3 ── terminal propagation
     terminals, fixed_inside = boundary_terminals(brd, ref_of_pad, movable,
@@ -1024,7 +1043,8 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         + (f" (area {area})" if area is not None else "")
         + f" | {len(movable_refs)} movable | {len(auto_fixed)} auto-fixed locked"
         + (f" ({', '.join(auto_fixed)})" if auto_fixed else "")
-        + f" | {len(obstacles)} frozen obstacles | {len(terminals)} boundary nets")
+        + f" | {len(obstacles)} frozen obstacles | {len(keepouts)} hole keep-outs"
+        + f" | {len(terminals)} boundary nets")
     if unplaced:
         say(f"note    {len(unplaced)} unlocked part(s) sit off every board "
             f"outline (a default-placed pile) and were NOT auto-added: "
@@ -1044,8 +1064,9 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             f"{m['ref']} -> {m['constraint']} ({m['distance_mm']} mm)"
             for m in seeded))
     model = None if impossible else PlacementModel(
-        parts, region, specs, obstacles=obstacles,
-        fixed_points=fixed_points, net_weights=net_weights)
+        parts, region, specs, obstacles=obstacles, keepouts=keepouts,
+        fixed_points=fixed_points, net_weights=net_weights,
+        min_gap_mm=min_gap_mm)
     # how many placed footprints the collision model models from their REAL
     # F.CrtYd vs the pad-bbox proxy — so the note below tells the driver the
     # truth about this run's model instead of a stale blanket "proxy" claim.
@@ -1070,6 +1091,10 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
             "pile) — assigned to NO area, not auto-added; name them in "
             "components to place them, or roughly place them in KiCad first"),
         "frozen_obstacles": obstacle_refs,
+        "hole_keepouts": [{"x": round(cx, 2), "y": round(cy, 2),
+                           "radius_mm": round(r, 2)} for cx, cy, r in keepouts],
+        "hole_clearance_mm": hole_clearance_mm,
+        "min_gap_mm": min_gap_mm,
         "seeded": seeded,
         "boundary_nets": [asdict(t) for t in terminals],
         "fixed_inside_nets": sorted(fixed_inside),
@@ -1093,11 +1118,28 @@ def optimize_region(board_path, components=None, region=None, constraints=(),
         if impossible:
             raise RuntimeError("; ".join(impossible))
         pool = anneal_region(parts, region, specs, obstacles=obstacles,
-                             fixed_points=fixed_points,
+                             keepouts=keepouts, fixed_points=fixed_points,
                              net_weights=net_weights, grid_mm=grid_mm,
+                             min_gap_mm=min_gap_mm,
                              seed=seed, pool_size=k * 3, sweeps=sweeps)
     except RuntimeError as e:
-        diagnostics["infeasible_reason"] = str(e)
+        reason = str(e)
+        # The greedy repair walk reports whichever problem it got stuck on last —
+        # often an adjacency/fence failure even when the real blocker is the
+        # tightened default clearance, which the walk never names. So ALWAYS list
+        # the active clearance knobs on an infeasible run, so a driver whose
+        # placement used to work reaches for the right lever (--min-gap /
+        # --hole-clearance) instead of loosening the wrong constraint.
+        extras = []
+        if min_gap_mm > 0:
+            extras.append(f"a {min_gap_mm:g} mm inter-courtyard clearance is "
+                          f"enforced by default (--min-gap 0 to relax)")
+        if keepouts:
+            extras.append(f"{len(keepouts)} mounting-hole keep-out(s) active at "
+                          f"{hole_clearance_mm:g} mm clearance (--hole-clearance)")
+        if extras:
+            reason += " | also active: " + "; ".join(extras)
+        diagnostics["infeasible_reason"] = reason
         diagnostics["suggested_expansion"] = _suggest_expansion(
             region, [], terminals, pitch_mm,
             fallback="no feasible placement exists yet — fix the reason above "
@@ -1663,6 +1705,15 @@ def main(argv=None):
     ap.add_argument("--layers", default="F.Cu,B.Cu")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--sweeps", type=int, default=200)
+    ap.add_argument("--hole-clearance", type=float, default=3.0,
+                    metavar="MM", help="screw-head clearance kept clear around "
+                    "each board mounting hole, hole-edge outward (default 3.0 "
+                    "for M3); courtyards are hard-rejected from these keep-outs. "
+                    "0 keeps only the drilled hole itself clear, no head margin")
+    ap.add_argument("--min-gap", type=float, default=0.25, metavar="MM",
+                    help="minimum clearance GAP required between courtyards "
+                    "(default 0.25); touching courtyards = 0 clearance = a DRC "
+                    "crash. 0 reverts to plain no-overlap")
     ap.add_argument("--via-weight", type=float, default=VIA_WEIGHT_MM,
                     help="mm of track a via is worth when ranking")
     ap.add_argument("--keep-work", action="store_true",
@@ -1711,6 +1762,7 @@ def main(argv=None):
             keep_work=args.keep_work, area=args.area,
             auto_fix_locked=not args.no_auto_fix_locked,
             respect_positions=args.respect_positions,
+            hole_clearance_mm=args.hole_clearance, min_gap_mm=args.min_gap,
             progress=None if args.json else (lambda m: print(m, flush=True)))
     except ValueError as e:
         ap.error(str(e))

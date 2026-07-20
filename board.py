@@ -106,6 +106,10 @@ class Board:
                                   # (sheetname ...)) or None — a ready-made,
                                   # human-authored grouping (parts on one sheet
                                   # usually belong on one board/area).
+    holes: tuple = ()             # (cx, cy, radius) per board mounting hole
+                                  # (gr_circle on Edge.Cuts / User layers). The
+                                  # placer keeps courtyards off these, inflated
+                                  # by screw-head clearance.
 
 
 # ── s-expression parsing ──────────────────────────────────────────────────────
@@ -346,6 +350,56 @@ def _footprint_sheet(fp):
     if node is not None and len(node) > 1 and isinstance(node[1], str):
         return str(node[1])
     return None
+
+
+def _hole_layer(g):
+    """The circle's layer string if it is on Edge.Cuts or a User layer (where
+    mechanical holes/cutouts live), else None. Circles on silk/copper/courtyard
+    layers are decoration, not holes."""
+    layer = _kid(g, "layer")
+    ln = str(layer[1]) if layer and len(layer) > 1 else ""
+    return ln if (ln == "Edge.Cuts" or ln.startswith("User")) else None
+
+
+def _board_holes(root, board_size=None):
+    """(cx, cy, radius) for each board mounting hole / circular cutout: a
+    gr_circle on Edge.Cuts or a User layer, PLUS fp_circle on those layers drawn
+    inside a footprint (the MountingHole-footprint idiom), transformed into board
+    coordinates by the footprint (at x y rot) frame. The placer keeps courtyards
+    off these, inflated by screw-head clearance.
+
+    The board's OUTER boundary circle (a round board's outline) is excluded: a
+    real hole is smaller than the board, so a circle whose diameter spans the
+    whole board is the outline, not a hole. (An np_thru_hole pad with no
+    fp_circle outline is not modelled — the MountingHole footprints that place
+    such pads draw the Edge.Cuts fp_circle this reads.)"""
+    min_side = min(board_size) if board_size else math.inf
+    holes = []
+
+    def emit(cx, cy, r):
+        if r > 0 and 2 * r < min_side - 1e-6:      # exclude the board-outline circle
+            holes.append((cx, cy, r))
+
+    for g in root:                                 # top-level gr_circle
+        if isinstance(g, list) and g and g[0] == "gr_circle" \
+                and _hole_layer(g) is not None:
+            c = _floats(_kid(g, "center") or ["center"])
+            e = _floats(_kid(g, "end") or ["end"])
+            if len(c) >= 2 and len(e) >= 2:
+                emit(c[0], c[1], math.hypot(e[0] - c[0], e[1] - c[1]))
+
+    for fp in _footprints(root):                   # fp_circle inside footprints
+        fx, fy, frot = _fp_frame(fp)
+        for g in fp:
+            if isinstance(g, list) and g and g[0] == "fp_circle" \
+                    and _hole_layer(g) is not None:
+                c = _floats(_kid(g, "center") or ["center"])
+                e = _floats(_kid(g, "end") or ["end"])
+                if len(c) >= 2 and len(e) >= 2:
+                    dx, dy = _rotate(c[0], c[1], frot)
+                    emit(fx + dx, fy + dy,
+                         math.hypot(e[0] - c[0], e[1] - c[1]))
+    return holes
 
 
 def _edge_shapes(root):
@@ -690,4 +744,5 @@ def load_board(path: str) -> Board:
                  pads=pads, tracks=tracks, vias=vias,
                  outline_regions=tuple(outline_regions(shapes)),
                  footprint_courtyards=courtyards,
-                 footprint_sheets=sheets)
+                 footprint_sheets=sheets,
+                 holes=tuple(_board_holes(root, size)))
