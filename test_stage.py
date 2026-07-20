@@ -312,15 +312,26 @@ def test_generate_boxes_off_centre_origin_parts():
     shutil.rmtree(staged_dir, ignore_errors=True)
     staged = stage.generate(board, part, staged_dir)
     sp = parts_from_board(staged)
-    # every one — including the off-centre O1/O2 — has its COURTYARD in the
-    # margin box below the board, not left at its pile coordinate (~ -30).
-    def court_cy(p):
+    # STRONG: each part's whole COURTYARD (not just its origin) must lie inside
+    # the group's box. If _pack_into_box dropped the origin->courtyard offset
+    # (placing pin-1 at the cell center), the off-centre O1/O2 courtyards would
+    # poke 9 mm outside the box — the exact bug this test guards.
+    import re as _re
+    with open(staged, encoding="utf-8") as f:
+        m = _re.search(r'gr_rect \(start ([\d.-]+) ([\d.-]+)\) '
+                       r'\(end ([\d.-]+) ([\d.-]+)\) \(stroke', f.read())
+    bx0, by0, bx1, by1 = (float(v) for v in m.groups())
+
+    def court_in_box(p):
         x0, y0, x1, y1 = part_courtyard(p)
-        return (y0 + y1) / 2.0
-    boxed = all(court_cy(sp[r]) > 40.0 for r in ("C1", "O1", "O2"))
-    check("all 3 parts (incl. 9 mm off-centre O1/O2) boxed into the margin",
-          boxed, f"cy: " + ", ".join(f"{r}={court_cy(sp[r]):.1f}"
-                                     for r in ("C1", "O1", "O2")))
+        return (bx0 - 1e-6 <= x0 and x1 <= bx1 + 1e-6
+                and by0 - 1e-6 <= y0 and y1 <= by1 + 1e-6)
+    inside = all(court_in_box(sp[r]) for r in ("C1", "O1", "O2"))
+    check("every part's COURTYARD (incl. 9 mm off-centre O1/O2) lands inside "
+          "the group box, not just its origin", inside,
+          "box (%.1f,%.1f)-(%.1f,%.1f); courts " % (bx0, by0, bx1, by1)
+          + ", ".join(f"{r}={tuple(round(v,1) for v in part_courtyard(sp[r]))}"
+                      for r in ("C1", "O1", "O2")))
 
 
 def test_harvest_straddle_uses_majority_vote():
@@ -391,14 +402,31 @@ def test_layer_injection_picks_a_free_ordinal():
     with open(staged, encoding="utf-8") as f:
         txt = f.read()
     ords = re.findall(r'\((\d+)\s+"[^"]+"\s+\w+\)', txt.split("(net")[0])
-    check("Cmts.User was added and no layer ordinal is duplicated",
-          "Cmts.User" in txt and len(ords) == len(set(ords)),
+    check("Cmts.User was added and no layer ordinal is duplicated (Dwgs.User "
+          "holds 40)", "Cmts.User" in txt and len(ords) == len(set(ords)),
           f"ordinals {ords}")
-    # and it still loads in our parser (regions unchanged = 2? this board has 1)
     from board import load_board as _lb
     from lattice import board_outline_regions as _bor
-    check("the staged board still parses with the 2 real board regions (no "
-          "phantom from the box)", len(_bor(_lb(staged))) == 2)
+    check("the staged board still parses with its 2 real board regions (the box "
+          "adds no phantom)", len(_bor(_lb(staged))) == 2)
+
+    # FALLBACK branch: a board that already occupies the canonical 41 -> Cmts.User
+    # must take a DIFFERENT id (max+1), never a duplicate 41.
+    head41 = PCB_HEAD.replace('\t\t(44 "Edge.Cuts" user)\n',
+                              '\t\t(41 "User.1" user)\n\t\t(44 "Edge.Cuts" user)\n')
+    board41 = write_board(os.path.join(OUT, "occ41.kicad_pcb"),
+                          [("P1", -30.0, -30.0, False)], head=head41)
+    part41 = _write_partition(os.path.join(OUT, "occ41.json"),
+                              {"groups": [{"name": "g", "refs": ["P1"], "area": 0}]})
+    sd41 = os.path.join(OUT, "occ41-staged")
+    shutil.rmtree(sd41, ignore_errors=True)
+    st41 = stage.generate(board41, part41, sd41)
+    with open(st41, encoding="utf-8") as f:
+        txt41 = f.read()
+    ords41 = re.findall(r'\((\d+)\s+"[^"]+"\s+\w+\)', txt41.split("(net")[0])
+    check("free-ordinal fallback: when 41 is taken, Cmts.User gets a distinct id",
+          "Cmts.User" in txt41 and len(ords41) == len(set(ords41))
+          and '(41 "Cmts.User"' not in txt41, f"ordinals {ords41}")
 
 
 if __name__ == "__main__":
