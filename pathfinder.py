@@ -328,6 +328,89 @@ def _footprint(lat, path, halo, exempt=frozenset(), track_halo=None):
     return nodes
 
 
+def _barrel_columns(lat, conns, node_owner, extra_allow):
+    """(col_nets, allow_cols) for the barrel checks below.
+
+    col_nets: planar column (y*W+x) -> {nets with copper on ANY layer there},
+    from node_owner (pads + earlier tiers' chained copper) and every kept path.
+    allow_cols: net -> columns the router explicitly opened (extra_allow, the
+    input board's nested different-net pad copper) — a via there crosses copper
+    the board already joins, not a new short, so it is never flagged."""
+    plane = lat.W * lat.H
+    col_nets = {}
+    for nd, net in (node_owner or {}).items():
+        col_nets.setdefault(nd % plane, set()).add(net)
+    for c in conns:
+        if c.path is None:
+            continue
+        for nd in c.path:
+            col_nets.setdefault(nd % plane, set()).add(c.net)
+    allow_cols = {net: {int(nd) % plane for nd in nodes}
+                  for net, nodes in (extra_allow or {}).items()}
+    return col_nets, allow_cols
+
+
+def _barrel_contested(lat, conns, col_nets, allow_cols):
+    """Yield (conn, planar_column, foreign_net) for every kept connection whose
+    via's full-column barrel is contested by foreign copper. A through-hole via
+    is emitted on all copper layers but the lattice models it as adjacent-layer
+    hops, so a via that changes only F->In1 never reserves the In2/B barrel —
+    foreign copper on a skipped layer then runs through the emitted barrel (the
+    node model is blind to it). One (the first contested) via per connection."""
+    plane = lat.W * lat.H
+    for c in conns:
+        if c.path is None:
+            continue
+        allowed = allow_cols.get(c.net, ())
+        for a, b in zip(c.path, c.path[1:]):
+            base = a % plane
+            if base != b % plane or base in allowed:
+                continue                # planar move (a track) or an opened col
+            foreign = [n for n in col_nets.get(base, ()) if n != c.net]
+            if foreign:
+                yield c, base, min(foreign)
+                break
+
+
+def _barrel_block_step(lat, conns, node_owner, extra_allow, barrel_block, masks):
+    """Negotiation-integrated barrel avoidance: rip every connection whose via
+    barrel is contested and add that column to the net's keep-out so the loop
+    REROUTES it around the barrel instead of dropping it. Invalidates the net's
+    cached mask so the keep-out takes effect. Returns the number ripped."""
+    col_nets, allow_cols = _barrel_columns(lat, conns, node_owner, extra_allow)
+    moved = 0
+    for c, base, _fn in list(_barrel_contested(lat, conns, col_nets, allow_cols)):
+        barrel_block.setdefault(c.net, set()).add(base)
+        masks.pop(c.net, None)          # rebuild the mask with the new keep-out
+        c.path = None
+        c.reason = "rerouting around a through-hole via barrel"
+        moved += 1
+    return moved
+
+
+def _barrel_legalize(lat, conns, node_owner, extra_allow=None):
+    """Fail-clean floor for the barrel check: after the negotiation has rerouted
+    what it can (_barrel_block_step), DROP any connection whose via barrel is
+    still contested — the net fails rather than the board shipping a barrel
+    short. Returns the number dropped (0 on a board the reroute fully cleared).
+
+    Honest limits: col_nets is one snapshot (dropping a connection does not
+    retract its copper, so a rare over-drop is possible — always fail-clean,
+    single sweep, no cascade). Cross-tier a LATER via is judged against earlier
+    copper here; the reverse leans on the earlier via's all-layer halo, which
+    holds whenever via exclusion is active."""
+    col_nets, allow_cols = _barrel_columns(lat, conns, node_owner, extra_allow)
+    W = lat.W
+    dropped = 0
+    for c, base, fn in list(_barrel_contested(lat, conns, col_nets, allow_cols)):
+        c.reason = (f"through-hole via at ({base % W},{base // W}) would cross "
+                    f"net {fn} on a skipped barrel layer — dropped to keep the "
+                    f"board DRC-clean (fail-clean)")
+        c.path = None
+        dropped += 1
+    return dropped
+
+
 def _own_tree_seed(a_nodes, kept_sets):
     """Side-aware source seeding: the a-side pad nodes plus every kept-path
     component of the net reachable (via kept paths) from them. Seeding only
@@ -440,6 +523,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     sec["connect"] = time.perf_counter() - t0
 
     N = lat.W * lat.H * lat.L
+    plane = lat.W * lat.H            # nodes per copper layer (barrel-column stride)
     rp, ci, wt = lat.to_mx()
     # One arbitration rule everywhere: build_connections' claims (lowest net
     # wins) override node_owner's last-pad-wins on overlapping rectangles,
@@ -463,6 +547,11 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             soft_np[np.fromiter(nodes, dtype=np.int64,
                                 count=len(nodes))] = np.float32(clearance_soft_cost)
     masks = {}
+    # per-net barrel keep-out: columns this net may NOT enter, so a via it put
+    # through another net's copper (a full through-hole barrel) reroutes rather
+    # than dropping. Grown by _barrel_block_step; net's mask is popped when it
+    # changes so the rebuild below picks it up.
+    barrel_block = {}
 
     def net_mask(net):
         m = masks.get(net)
@@ -486,6 +575,12 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
             grant = (extra_allow or {}).get(net)
             if grant:
                 m[np.fromiter(grant, dtype=np.int64, count=len(grant))] = 0
+            # barrel keep-out wins over every reopen above: block the whole
+            # column (every copper layer at that x,y) so no via can land there.
+            bcols = barrel_block.get(net)
+            if bcols:
+                for base in bcols:
+                    m[base::plane] = 1
             masks[net] = m
         return m
 
@@ -514,6 +609,7 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
     present = float(present_factor)
     overuse_curve = []
     iterations = 0
+    barrel_rounds = 0                   # bounded reroute-around-barrel attempts
 
     t_loop = time.perf_counter()
     for it in range(1, max_iters + 1):
@@ -615,6 +711,15 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         total = int(over.sum())
         overuse_curve.append(total)
         if total == 0:
+            # Overuse is resolved, but a through-hole via may still thread a
+            # foreign barrel the node model never priced (cross-tier, or a
+            # skipped layer). Block those columns for the offending nets and let
+            # the loop reroute the ripped connections around them — dropping is
+            # the last resort (_barrel_legalize after the loop), not the first.
+            if barrel_rounds < 8 and _barrel_block_step(
+                    lat, conns, node_owner, extra_allow, barrel_block, masks):
+                barrel_rounds += 1
+                continue
             break
 
         hist += np.float32(hist_weight) * over.astype(np.float32)
@@ -758,6 +863,11 @@ def route_lattice(lat, net_pads, node_owner=None, extra_allow=None,
         sec["refine"] = time.perf_counter() - t0
         sec["refine_gain_pct"] = (100.0 * (before - after) / before
                                   if before > 0 else 0.0)
+
+    # Through-hole vias are full-column obstacles the node model under-reserves;
+    # drop any whose barrel would cross foreign copper (fail-clean, never a
+    # short). Runs ALWAYS — an overuse-0 route can still hide a barrel crossing.
+    sec["barrel_dropped"] = _barrel_legalize(lat, conns, node_owner, extra_allow)
 
     net_paths, failed = {}, []
     for c in conns:
